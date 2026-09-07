@@ -70,6 +70,14 @@ class OrderRequest(BaseModel):
 class PayRequest(BaseModel):
     order_id: str
 
+class WaitlistRequest(BaseModel):
+    request_id: str
+    schedule_id: int
+    from_station_seq: int
+    to_station_seq: int
+    seat_class: str
+    passenger_count: int = 1
+
 # 3. HTTP API Endpoints
 
 @app.get("/api/v1/query")
@@ -150,6 +158,51 @@ async def reserve_split_ticket(req: SplitReserveRequest, db=Depends(get_db)):
         return {"reservation_id": reservation_id}
     except Exception as e:
         await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/v1/waitlist")
+async def submit_waitlist(req: WaitlistRequest, db=Depends(get_db)):
+    """POST endpoint to submit a waitlist reservation request when tickets are sold out."""
+    try:
+        waitlist_id = await ReservationService.submit_waitlist(
+            db_session=db,
+            request_id=req.request_id,
+            schedule_id=req.schedule_id,
+            from_seq=req.from_station_seq,
+            to_seq=req.to_station_seq,
+            seat_class=req.seat_class,
+            passenger_count=req.passenger_count
+        )
+        await db.commit()
+        return {"waitlist_id": waitlist_id}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/v1/waitlist/status")
+async def get_waitlist_status(waitlist_id: str, db=Depends(get_db)):
+    """GET endpoint to fetch the current status of a waitlist request."""
+    from src.app.models import Waitlist
+    from sqlalchemy import select
+    try:
+        stmt = select(Waitlist).where(Waitlist.id == waitlist_id)
+        wl = (await db.execute(stmt)).scalar()
+        if not wl:
+            raise HTTPException(status_code=404, detail="Waitlist request not found")
+        return {
+            "waitlist_id": wl.id,
+            "request_id": wl.request_id,
+            "schedule_id": wl.schedule_id,
+            "from_segment": wl.from_segment,
+            "to_segment": wl.to_segment,
+            "seat_class": wl.seat_class,
+            "passenger_count": wl.passenger_count,
+            "state": wl.state,
+            "created_at": wl.created_at.isoformat() if wl.created_at else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/v1/order")

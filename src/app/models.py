@@ -118,3 +118,18 @@ class ProcessedEvent(Base):
     consumer_name = Column(String(128), primary_key=True)
     event_id = Column(String(36), primary_key=True)
     processed_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+
+class Waitlist(Base):
+    __tablename__ = "waitlist"
+
+    id = Column(String(64), primary_key=True)
+    request_id = Column(String(64), nullable=False, unique=True)
+    schedule_id = Column(Integer, ForeignKey("train_schedule.id"), nullable=False)
+    from_segment = Column(Integer, nullable=False)
+    to_segment = Column(Integer, nullable=False)
+    seat_class = Column(String(32), nullable=False)
+    passenger_count = Column(Integer, nullable=False, default=1)
+    state = Column(String(32), nullable=False, default="QUEUED")  # QUEUED, SUCCESS, CANCELLED
+    created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
+

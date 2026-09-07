@@ -444,4 +444,138 @@ class ReservationService:
             await db_session.flush()
             await Projector.recalculate_and_project(db_session=db_session, schedule_id=schedule_id)
             
+            # TRS Trigger: Attempt automatic waitlist fulfillment
+            await ReservationService.auto_fulfill_waitlist(db_session, schedule_id)
+            
         return released_count
+
+    @staticmethod
+    async def submit_waitlist(
+        db_session,
+        request_id: str,
+        schedule_id: int,
+        from_seq: int,
+        to_seq: int,
+        seat_class: str,
+        passenger_count: int = 1
+    ) -> str:
+        """TRS: Accept a waitlist submission when seats are sold out, and write audit trail in Outbox."""
+        from src.app.models import Waitlist
+        
+        # 1. Check idempotency to prevent duplicate submissions
+        stmt = select(Waitlist).where(Waitlist.request_id == request_id)
+        existing = (await db_session.execute(stmt)).scalar()
+        if existing:
+            return existing.id
+
+        # 2. Validation
+        if from_seq >= to_seq:
+            raise Exception("Invalid station sequence: from_seq must be less than to_seq")
+
+        waitlist_id = "WL_" + str(uuid.uuid4().hex[:12].upper())
+        wl_item = Waitlist(
+            id=waitlist_id,
+            request_id=request_id,
+            schedule_id=schedule_id,
+            from_segment=from_seq,
+            to_segment=to_seq,
+            seat_class=seat_class,
+            passenger_count=passenger_count,
+            state="QUEUED"
+        )
+        db_session.add(wl_item)
+        await db_session.flush()
+
+        # 3. Write Outbox audit trail
+        outbox_event = OutboxEvent(
+            event_id=str(uuid.uuid4()),
+            aggregate_type="WAITLIST",
+            aggregate_id=waitlist_id,
+            event_type="WAITLIST_SUBMITTED",
+            payload={
+                "waitlist_id": waitlist_id,
+                "request_id": request_id,
+                "schedule_id": schedule_id,
+                "from_segment": from_seq,
+                "to_segment": to_seq,
+                "seat_class": seat_class,
+                "passenger_count": passenger_count
+            },
+            status="NEW"
+        )
+        db_session.add(outbox_event)
+        await db_session.flush()
+
+        return waitlist_id
+
+    @staticmethod
+    async def auto_fulfill_waitlist(db_session, schedule_id: int) -> int:
+        """TRS: Attempt to automatically fulfill active waitlist requests when seats become available."""
+        from src.app.models import Waitlist
+        
+        # 1. Fetch all active QUEUED waitlists for this schedule_id, oldest first
+        wl_stmt = select(Waitlist).where(
+            Waitlist.schedule_id == schedule_id,
+            Waitlist.state == "QUEUED"
+        ).order_by(Waitlist.created_at.asc()).with_for_update()
+        
+        queued_items = (await db_session.execute(wl_stmt)).scalars().all()
+        fulfilled_count = 0
+
+        for wl in queued_items:
+            # 2. Attempt Reservation utilizing nested SAVEPOINT
+            try:
+                async with db_session.begin_nested():
+                    # Generate a unique request_id for the reservation (prefixing waitlist's id)
+                    res_req_id = f"REQ_AUTO_{wl.id}_{wl.request_id[:20]}"
+                    
+                    # Reuse existing seat-allocation logic 
+                    res_id = await ReservationService.reserve_ticket(
+                        db_session=db_session,
+                        request_id=res_req_id,
+                        schedule_id=wl.schedule_id,
+                        from_seq=wl.from_segment,
+                        to_seq=wl.to_segment,
+                        seat_class=wl.seat_class,
+                        passenger_count=wl.passenger_count
+                    )
+                    
+                    # Succeeded! Update waitlist record state
+                    wl.state = "SUCCESS"
+                    
+                    # Insert notification outbox event
+                    outbox_event = OutboxEvent(
+                        event_id=str(uuid.uuid4()),
+                        aggregate_type="WAITLIST",
+                        aggregate_id=wl.id,
+                        event_type="WAITLIST_FULFILLED",
+                        payload={
+                            "waitlist_id": wl.id,
+                            "reservation_id": res_id,
+                            "schedule_id": wl.schedule_id,
+                            "from_segment": wl.from_segment,
+                            "to_segment": wl.to_segment,
+                            "seat_class": wl.seat_class,
+                            "passenger_count": wl.passenger_count
+                        },
+                        status="NEW"
+                    )
+                    db_session.add(outbox_event)
+                
+                # Commit nested transaction and increment count
+                fulfilled_count += 1
+                logger.info(f"[Waitlist-Fulfill] Successfully auto-fulfilled waitlist item {wl.id} with reservation {res_id}")
+                
+            except Exception as e:
+                # Failed nested transaction: seat not available or adjacent failed. Roll back to savepoint and continue
+                logger.debug(f"[Waitlist-Fulfill-Skip] Waitlist {wl.id} cannot be fulfilled yet: {e}")
+                continue
+
+        if fulfilled_count > 0:
+            # Trigger Projection recalculation to reflect auto-reservations in Redis
+            from src.app.projector import Projector
+            await db_session.flush()
+            await Projector.recalculate_and_project(db_session=db_session, schedule_id=schedule_id)
+
+        return fulfilled_count
+

@@ -141,6 +141,7 @@ class OrderService:
 
         redis_client = get_redis()
         released_count = 0
+        released_schedule_ids = set()
 
         for res in expired_reservations:
             # 2. Lock the Reservation row
@@ -210,9 +211,14 @@ class OrderService:
             )
             db_session.add(outbox_event)
 
+            released_schedule_ids.add(locked_res.schedule_id)
             released_count += 1
 
         if released_count > 0:
             await db_session.flush()
+            # Trigger waitlist auto-fulfillment for each impacted train schedule
+            from src.app.reservation_service import ReservationService
+            for sched_id in released_schedule_ids:
+                await ReservationService.auto_fulfill_waitlist(db_session, sched_id)
 
         return released_count
