@@ -159,6 +159,16 @@
 - **`./ops.sh seed`**：重塑 MySQL DDL 物理表、一键 `flushdb()` 清除 Redis 旧缓存、写入基线 G888 次列车并**自动驱动缓存预热（Pre-heating）**，瞬发即售。
 - **`./ops.sh test`**：一键拉起全量 23 个测试流水线进行自动化核销！
 
+### 📈 C. 云原生分布式自动弹性伸缩 (K8s HPA & KEDA)
+
+系统已原生适配云原生高可用（High-Availability）和自动扩缩容规范：
+
+- **无状态核心 HPA (HorizontalPodAutoscaler)**：在 `ticketing-web-api` 的 CPU 平均水位超 75% 时进行秒级极速横向扩容（Pod 实例数 5 -> 100），并配备了高标准的 Liveness & Readiness 自愈健康探针。
+- **事件驱动 KEDA (Kafka ScaledObject)**：对投影消费端 `ticketing-projector` 引入 KEDA 事件驱动扩缩容。一旦 Kafka 消息积压（Consumer Lag）超过 100 条，代表缓存投影时差拉大，系统瞬间横向拉起 32 路并行投影，强制将读写最终一致性延迟时间锁定在 100ms 黄金安全水位线！
+
+👉 **[点击阅读：《云原生弹性伸缩 (Auto-Scaling) 方案与 K8s/KEDA 声明规约》](./docs/12306_云原生弹性伸缩_K8s_HPA_KEDA_方案与声明规约.md)**
+👉 **[点击查阅：K8s 物理部署清单声明 `./deploy/k8s-autoscale-manifests.yaml`](./deploy/k8s-autoscale-manifests.yaml)**
+
 ---
 
 # 5. 自动化测试与高并发撞击压测 (Test & Benchmark)
