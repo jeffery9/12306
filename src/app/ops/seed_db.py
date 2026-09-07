@@ -33,7 +33,7 @@ async def seed_system():
     async with async_session() as session:
         async with session.begin():
             print("[Ops] 正在写入基线列车主数据 Train [G888]...")
-            train = Train(code="G888", name="复兴号智能动车组 G888 次")
+            train = Train(code="G888")
             session.add(train)
             await session.flush()  # Capture auto-incremented ID
 

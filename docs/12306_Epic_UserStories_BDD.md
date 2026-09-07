@@ -39,6 +39,11 @@
      ├── US-7.1: 分段阶梯限售与长途优先保障池隔离 (Long-Distance Quota Isolation)
      ├── US-7.2: 临售时限未售配额动态解锁与共享 (Dynamic Quota Sharing & Auto-Release)
      └── US-7.3: 弹性安全库存缓冲与候补溢出超配 (Elastic Safety Buffer & Standby Queue)
+
+  [ EPIC-08: TRS 局端客专数据导入与余票发布控制 ]
+     ├── US-8.1: TRS 局端计划发布接口 (TRS Authority Sync Interface)
+     ├── US-8.2: 12306 数据库物理席位原子写入与区间锁初始化 (SQL Atomicity)
+     └── US-8.3: 导入后自动 Redis 内存预热重算 (Auto Cache Pre-heating)
 ```
 
 ---
@@ -246,6 +251,36 @@
 
 ---
 
+### 🌌 EPIC-08: TRS 局端客专数据导入与余票发布控制 (TRS Authority Sync)
+
+**业务价值 (Value Proposition)**：打通铁路物理主权调度系统（TRS）到互联网高并发售票端（12306）的物理数据发布桥梁。通过高标准的 schema 防御验证、多表原子写入，并瞬间驱动 12306 自身的 CQRS 内存投影，实现车次开行方案的零延迟发布。
+
+#### 👤 US-8.1: TRS 局端计划发布接口
+
+- **用户故事**：作为一名**TRS 系统业务网关 Worker**，我希望能够**通过高内聚的 REST API 向 12306 投递某趟车次的发布报文**，以便 12306 开启互联网售票通道。
+- **验收标准 (AC-1)**：
+  - **Given (前提)**：TRS 完成了 G999 次列车的乘务编组、经停站（北京、天津、济南、上海）和 3 个商务舱席位配置。
+  - **When (触发动作)**：TRS 向 12306 呼叫 `POST /api/v1/ops/trs/import-schedule`。
+  - **Then (预期结果)**：12306 接收该报文，经过 Pydantic 对车次代码、日期和席位格式的严格校验后进入同步管线，回执 `SUCCESS`。
+
+#### 👤 US-8.2: 12306 数据库物理席位原子写入与区间锁初始化
+
+- **用户故事**：作为一名**12306 局端数据同步服务**，我希望在**接收到 TRS 报文时，能够在单数据库事务内原子建立对应的车次、站序列、席位和区间锁**，以便同步过程中遭遇任何异常（如单点报错）能 100% 回滚，杜绝脏数据。
+- **验收标准 (AC-2)**：
+  - **Given (前提)**：G999 次列车在 12306 库中尚未注册。
+  - **When (触发动作)**：局端同步处理器执行。
+  - **Then (预期结果)**：服务在单一 `async_session` 事务下，按外键依赖顺序依次原子写入 `train` 行、`station` 经停站行、`train_schedule` 行、`seat` 席位行，并自动对 3 个席位依次各初始化 3 段处于 `AVAILABLE`（空闲）状态的 `seat_segment` 区间锁。若在写入席位 2 时中断，全案原子回滚，保持数据绝对精纯。
+
+#### 👤 US-8.3: 导入后自动 Redis 内存预热重算
+
+- **用户故事**：作为一名**互联网售票读侧投影器**，我希望在**TRS 局端数据物理写入成功后，系统能够自动触发 Redis 内存预热重算**，以便旅客在数据导入完毕的第一毫秒即可在前端瞬间查到该趟列车及其精准可用余票。
+- **验收标准 (AC-3)**：
+  - **Given (前提)**：TRS 写入事务即将提报。
+  - **When (触发动作)**：同步服务在事务提交前自动调度 `Projector.recalculate_and_project` 针对该车次进行投影计算。
+  - **Then (预期结果)**：数据库提交的同时，Redis 内代表 G999 列车各区间（1-2、2-3、3-4、1-4）的哈希掩码和余票统计被秒级生成（显示 `available_seats: 3`），读模型自愈热身成功，旅客查询实现毫秒级“即导即售”。
+
+---
+
 ## 3. BDD Gherkin 契约对齐文件
 
 上述 User Stories 与底层业务规则已被 100% 集成、固化至项目根目录的 BDD 特征文件 **`src/tests/features/ticketing.feature`** 中。
@@ -334,7 +369,17 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
     When the automatic quota releaser triggers allocation merger
     Then the long-distance isolation lock on Seat "01A" should be dynamic-released
     And the short-distance queries for sequence 1 to 2 should now return 1 available seat
+
+  # 对应 US-8.1、US-8.2 与 US-8.3：TRS 权威发布并秒级激活 12306 Redis 内存预热
+  Scenario: TRS authority publishes train schedule with seat allocations, automatically pre-heating 12306 Redis cache
+    Given the authoritative Railway Bureau TRS system dispatches a new train schedule for "G999"
+    When TRS calls the integration endpoint to publish the G999 plan to 12306
+    Then 12306 should atomically commit the train, Stations, and 3 BUSINESS seats with Segment Locks
+    And the high-concurrency query cache on Redis for G999 should automatically pre-heat
+    And the subsequent passenger query for route sequence 1 to 2 should instantly return 3 available seats
 ```
+
+````
 
 ---
 
@@ -357,7 +402,7 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
       "redis": "OK"
     }
   }
-  ```
+````
 
 ### 4.2 自动化配席重组工具 (ops/seed_db.py)
 

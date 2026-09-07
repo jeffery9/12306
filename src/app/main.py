@@ -22,7 +22,26 @@ async def get_db():
     async with async_session() as session:
         yield session
 
+from typing import List
+
 # 2. Pydantic Schemas for JSON Request Bodies
+class StationImportModel(BaseModel):
+    name: str
+    sequence: int
+
+class CarriageSeatsImportModel(BaseModel):
+    carriage: str
+    seat_class: str
+    seats: List[str]
+
+class TRSImportScheduleRequest(BaseModel):
+    train_code: str
+    train_name: str
+    service_date: str
+    schedule_id: int
+    stations: List[StationImportModel]
+    carriage_seats: List[CarriageSeatsImportModel]
+
 class ReserveRequest(BaseModel):
     request_id: str
     schedule_id: int
@@ -149,3 +168,17 @@ async def ops_health(db=Depends(get_db)):
             "redis": redis_status
         }
     }
+
+@app.post("/api/v1/ops/trs/import-schedule")
+async def trs_import_schedule(req: TRSImportScheduleRequest, db=Depends(get_db)):
+    """Authoritative API endpoint for TRS (Railway Core System) to publish/sync train schedules to 12306."""
+    from src.app.trs_sync_service import TRSSyncService
+    try:
+        # Convert Pydantic request model to dictionary for the integration service
+        payload = req.model_dump()
+        result = await TRSSyncService.import_schedule(db_session=db, payload=payload)
+        await db.commit()
+        return result
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
