@@ -173,13 +173,24 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 🔌 3. 启动 FastAPI API 实例
+### 🔌 3. 启动后端交易服务 (Backend API - Port 8000)
 
 ```bash
+# 启动写模型核心、余票查询及发件箱事务端点
 python -m uvicorn src.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 🚀 4. 发起 curl 撞击调试流
+### 🖥️ 4. 启动独立前端网页服务 (Frontend Web App - Port 8080)
+
+```bash
+# 启动专门用于静态资产和单页仪表盘托管的 Web 服务器
+python -m uvicorn src.app.web_server:app --host 0.0.0.0 --port 8080 --reload
+```
+
+打开浏览器，访问以下地址即可进入极具动感的高并发票务监控大屏：
+**[http://localhost:8080](http://localhost:8080)**
+
+### 🚀 5. 发起 curl 撞击调试流
 
 请参照最新的 [12306*Python*技术实现与落地方案.md](./docs/12306_Python_技术实现与落地方案.md) 中的 **第 4 节 (API 端点现场调用与冒烟调试指南)**，通过 6 个原子的 `curl` 请求对以下流程执行手动调试验证：
 

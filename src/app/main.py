@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from src.app.database import async_session
 from src.app.redis_client import get_redis
@@ -6,6 +7,15 @@ from src.app.reservation_service import ReservationService
 from src.app.order_service import OrderService
 
 app = FastAPI(title="12306 High-Concurrency Ticketing MVP", version="1.0.0")
+
+# Enable Cross-Origin Resource Sharing (CORS) for independent Frontend Web Apps
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict to allowed origins (e.g. localhost:8080)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 1. Database Dependency Generator
 async def get_db():
