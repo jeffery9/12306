@@ -128,8 +128,34 @@ class Waitlist(Base):
     from_segment = Column(Integer, nullable=False)
     to_segment = Column(Integer, nullable=False)
     seat_class = Column(String(32), nullable=False)
-    passenger_count = Column(Integer, nullable=False, default=1)
+    passenger_ids = Column(JSON, nullable=False)  # JSON Array of strings (e.g. ["PSG_001"])
     state = Column(String(32), nullable=False, default="QUEUED")  # QUEUED, SUCCESS, CANCELLED
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
     updated_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"))
+
+
+class Passenger(Base):
+    __tablename__ = "passenger"
+
+    id = Column(String(64), primary_key=True)
+    name = Column(String(64), nullable=False)
+    id_no = Column(String(64), nullable=False, unique=True)
+    passenger_type = Column(String(32), nullable=False, default="ADULT")
+    created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+
+
+class Ticket(Base):
+    __tablename__ = "ticket"
+
+    id = Column(String(64), primary_key=True)
+    reservation_id = Column(String(64), ForeignKey("reservation.id"), nullable=False)
+    passenger_id = Column(String(64), ForeignKey("passenger.id"), nullable=False)
+    seat_id = Column(Integer, ForeignKey("seat.id"), nullable=False)
+    price = Column(Numeric(18, 2), nullable=False)
+    created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+
+    reservation = relationship("Reservation")
+    passenger = relationship("Passenger")
+    seat = relationship("Seat")
+
 
