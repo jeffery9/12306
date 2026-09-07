@@ -6,7 +6,7 @@
 
 ## 1. 敏捷架构大纲 (Agile Hierarchy)
 
-本项目核心交易与查询生命周期被划分为 **4 大史诗特性（Epics）**：
+本项目核心交易与查询生命周期被划分为 **5 大史诗特性（Epics）**：
 
 ```text
   [ EPIC-01: 读写分离冷热查询 ]
@@ -24,6 +24,11 @@
   [ EPIC-04: 发件箱事件最终一致性 ]
      ├── US-4.1: 事务性发件箱保序投递 (SKIP LOCKED Outbox Publisher)
      └── US-4.2: 读模型异步投影器 (Idempotent Projector Consumer)
+
+  [ EPIC-05: 铁路局端运营调度后台 ]
+     ├── US-5.1: 动态配票定价与里程费率配置 (Dynamic Revenue Pricing)
+     ├── US-5.2: 可视化席位区间占用热力图 (Visual Live Heatmap)
+     └── US-5.3: 应急席位划拨与官方硬锁隔离 (Emergency Requisition Block)
 ```
 
 ---
@@ -141,6 +146,36 @@
 
 ---
 
+### 🌌 EPIC-05: 铁路局端运营调度后台 (Railway Bureau Operations)
+
+**业务价值 (Value Proposition)**：为铁路局端（12306 运营调度、收益管控、应急防务部门）提供底层车次生命周期控制。支持动态区间收益阶梯调价、席位段物理状态的可视化热力透视、以及物理区间的“应急官方硬锁隔离”，从而实现列车在安全与收益层面的精细化编排。
+
+#### 👤 US-5.1: 动态配票定价与里程费率配置
+
+- **用户故事**：作为一名**铁路局收益管理员**，我希望能够**动态调整特定车次和席别在不同运行区间、不同旺季的每里程基准票价单价**，以便精准实现收益最大化（Revenue Management）并响应市场供需。
+- **验收标准 (AC-1)**：
+  - **Given (前提)**：铁路局调度系统发布了 G888 次商务舱的基准费率（如每公里 1.2 元）。
+  - **When (触发动作)**：收益管理员将该费率上调至 1.5 元。
+  - **Then (预期结果)**：此后，当旅客对“北京-天津”和“天津-济南”段购票时，订单服务核心自动根据最新费率重算该区间的物理公里单价（如北京-天津 120km = 180元），保证费率变更对未锁定订单秒级生效。
+
+#### 👤 US-5.2: 可视化席位区间占用热力图
+
+- **用户故事**：作为一名**铁路局列车运营调度员**，我希望能够**在一个大屏上可视化查看指定日期车次每个物理座席在全部区间上的状态热力矩阵**，以便我实时掌握列车席位段的周转利用率（Seat Turn Rate）并决策是否增开。
+- **验收标准 (AC-2)**：
+  - **Given (前提)**：G888 次车 01 车厢 01A 座位，北京-天津段已被购买，济南-上海段被预占 HELD，天津-济南段闲置 AVAILABLE。
+  - **When (触发动作)**：调度员输入车次、发车日查询席位热力大屏。
+  - **Then (预期结果)**：系统返回一个二维状态矩阵（Seat-Segment Matrix），清晰将 01A 座在 bit 0（段 1）标记为 CONFIRMED（红色），bit 1（段 2）标记为 AVAILABLE（绿色），bit 2（段 3）标记为 HELD（黄色），热力分布毫秒级透视。
+
+#### 👤 US-5.3: 应急席位划拨与官方硬锁隔离
+
+- **用户故事**：作为一名**铁路局安全防务协调员**，我希望能够**强制硬性锁定列车的特定席位及对应区间段（标记为官方隔离或应急预备）**，以便保障列车运行保障人员、技术抢修员的硬性占座，防止其被公众网络票流抢占。
+- **验收标准 (AC-3)**：
+  - **Given (前提)**：列车 01 车厢 02A 座位全段状态为空闲 AVAILABLE。
+  - **When (触发动作)**：安全员在局端调度台对 02A 的“北京-天津”（段 1）执行“应急官方隔离锁定”（更新 MySQL 记录为 `BLOCKED`，并将 Redis 对应位掩码 bit 0 开关硬性设为 1，所有权人标识为 `OFFICIAL_EMERGENCY_REQUISITION`）。
+  - **Then (预期结果)**：当普通公众购票人试图在北京-天津段抢占 02A 座时，Redis 内存位图过滤和 MySQL 区间排他行锁直接返回 `Seat Segment Blocked` 异常拒绝订购，确保国家级应急指挥/抢修通道 100% 绝对畅通。
+
+---
+
 ## 3. BDD Gherkin 契约对齐文件
 
 上述 User Stories 与底层业务规则已被 100% 集成、固化至项目根目录的 BDD 特征文件 **`src/tests/features/ticketing.feature`** 中。
@@ -177,6 +212,23 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
     And the background event processor consumes the "ORDER_PAID" event
     Then the MySQL seat segment 1 should be "CONFIRMED"
     And the Redis query model for route 1 to 3 should return 0 available seats
+
+  # 对应 US-5.3：官方官方应急锁段，拒绝普通客流预占
+  Scenario: Railway bureau coordinator blocks a seat segment for emergency crew use, rejecting passenger booking
+    Given a clean ticketing system with train "G666" and Stations "北京", "天津", "上海"
+    And a seat with class "BUSINESS" is fully available
+    When the railway bureau coordinator issues an emergency block on segment 1 for official crew reservation
+    Then the MySQL seat segment 1 should be marked as "BLOCKED"
+    And the Redis seat mask should reflect the official requisition block
+    When a regular passenger attempts to reserve a ticket from sequence 1 to 2
+    Then their booking request should be rejected as "Seat segment blocked for official use"
+
+  # 对应 US-5.1：收益定价调整，后续结算金额更新
+  Scenario: Revenue manager adjusts dynamic pricing rate and updates passenger billing amount
+    Given the dynamic base tariff rate for "BUSINESS" is set to 1.2 yuan per km
+    When the revenue manager increases the dynamic base tariff rate to 1.5 yuan per km
+    And a passenger creates an order for route sequence 1 to 2 (120 km)
+    Then the order payment amount should reflect the updated pricing tariff of 180.00 yuan
 ```
 
 ---
