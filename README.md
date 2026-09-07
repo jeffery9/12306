@@ -16,7 +16,7 @@
 
 ### ❓ 核心痛点：区间座位复用 (Segment Seat-Reuse)
 
-设有一趟列车经停：**北京 ──► 天津 ──► 济南 ──► 上海**。
+设设有一趟列车经停：**北京 ──► 天津 ──► 济南 ──► 上海**。
 
 - 如果旅客 A 购买了【北京 ──► 天津】段，此座位在【天津 ──► 上海】段依然可以再次售卖给旅客 B。
 - 如果旅客 C 购买了全线贯通的【北京 ──► 上海】票，则该座位的 3 个子区间段将被全部买断，不再对 A 和 B 开放。
@@ -118,49 +118,7 @@
 
 ---
 
-# 4. 项目目录结构 (Directory Structure)
-
-```text
-/Users/jeffery/Downloads/12306/
-├── docs/                          # 设计蓝图与敏捷契约规范
-│   ├── 12306_Epic_UserStories_BDD.md # 8 大 Epic、24 核心 User Stories、TRS 同步数据规格与 pytest-bdd Gherkin 规约大纲
-│   ├── 12306 高并发票务系统技术方案.md # Java 21 / 12306 企业级多级架构概念蓝图
-│   └── 12306_Python_技术实现与落地方案.md # Python 3.9 + FastAPI + Redis + Kafka 微服务落地方案
-├── src/
-│   ├── app/
-│   │   ├── main.py                # FastAPI 路由层、CORS 桥接、SRE 健康探测及局端导入端点
-│   │   ├── database.py            # SQLAlchemy AsyncEngine 及异步会话生命周期
-│   │   ├── models.py              # 高一致性物理表设计（Outbox、Idempotency 幂等表等）
-│   │   ├── redis_client.py        # Redis 连接池及核心位掩码预占/释放 Lua 脚本库
-│   │   ├── reservation_service.py # 分布式双防御锁座、邻座定位及票池隔离控制
-│   │   ├── order_service.py       # 订单状态机与超时未支付背景回收机制
-│   │   ├── outbox_publisher.py    # SKIP LOCKED 本地事务发件箱高性能发布 Worker
-│   │   ├── projector.py           # Kafka 最终一致性事件投影处理器
-│   │   ├── trs_sync_service.py    # 铁路局端 TRS 权威发布单事务自愈同步服务
-│   │   └── ops/
-│   │       └── seed_db.py         # DDL 重塑、物理配席初始化及 Redis 缓存预热脚本
-│   └── tests/
-│       ├── features/
-│       │   └── ticketing.feature  # 10 大 B2C / B2B 核心及智能选座场景描述（标准 Gherkin 规约）
-│       ├── conftest.py            # 会话级循环、全量表重构、Redis/Kafka 清空夹具
-│       ├── test_database.py       # 数据库物理 DDL 联通性测试
-│       ├── test_redis_lua.py      # 区间重合/非重合原子 Lua 检票测试
-│       ├── test_reservation_service.py # 核心订票拦截测试
-│       ├── test_order_service.py  # 订单状态回滚与 Redis 状态倒带测试
-│       ├── test_outbox_publisher.py # Outbox 模式 Kafka 分区保序消费测试
-│       ├── test_projector.py      # 缓存一致性重算投影测试
-│       ├── test_api_endpoints.py  # Web 全链路端到端 HTTP 测试
-│       ├── test_bdd_ticketing.py  # Gherkin 行为驱动真实场景独立场景绑定核销测试
-│       ├── test_trs_import.py     # 局端 TRS 发布、原子落库与缓存自愈预热核销测试
-│       └── test_concurrency_stress.py # 50路极端高并发撞击与死锁检测压力测试
-├── ops.sh                         # 一键式 SRE DevOps 控制台控制脚本
-├── pytest.ini                     # Pytest-Asyncio 全局会话作用域配置文件
-└── docker-compose.yml             # MySQL + Redis + Kafka 分布式物理环境一键编排
-```
-
----
-
-# 5. 一键式 DevOps 运维与 SRE 可观测性 (Ops Runbook)
+# 4. 一键式 DevOps 运维与 SRE 可观测性 (Ops Runbook)
 
 为了大幅度降低开发与运维调试门槛，项目根目录集成了免配置的 `./ops.sh` 脚本工具：
 
@@ -183,18 +141,18 @@
 
 - **`./ops.sh status`**：一键并行感知后端（Port 8000）与 Vue 3 前端（Port 8080）的物理活跃状态。
 - **`./ops.sh seed`**：重塑 MySQL DDL 物理表、一键 `flushdb()` 清除 Redis 旧缓存、写入基线 G888 次列车并**自动驱动缓存预热（Pre-heating）**，瞬发即售。
-- **`./ops.sh test`**：一键拉起全量 12 大测试流水线进行自动化核销！
+- **`./ops.sh test`**：一键拉起全量 19 个测试流水线进行自动化核销！
 
 ---
 
-# 6. 自动化测试与高并发撞击压测 (Test & Benchmark)
+# 5. 自动化测试与高并发撞击压测 (Test & Benchmark)
 
 本项目在开发全流程中严格贯彻 **TDD（测试驱动开发）** 与 **BDD（行为驱动开发）**。
 
-### 🧪 运行全量测试套件 (12 / 12 PASSED)
+### 🧪 运行全量测试套件 (19 / 19 PASSED)
 
 ```bash
-# 运行一键测试，自动完成环境清洁重置，拉起 12 大单元、集成、BDD、及高并发压测用例
+# 运行一键测试，自动完成环境清洁重置，拉起 19 大单元、集成、BDD、及高并发压测用例
 ./ops.sh test
 ```
 
@@ -216,7 +174,7 @@
 
 ---
 
-# 7. 本地开发与现场冒烟调试 (Get Started & Curl Tests)
+# 6. 本地开发与现场冒烟调试 (Get Started & Curl Tests)
 
 ### 🐳 1. 开启分布式基础设施
 
@@ -243,7 +201,7 @@ python -m uvicorn src.app.main:app --host 0.0.0.0 --port 8000 --reload
 ### 🖥️ 4. 启动独立前端网页服务 (Frontend Web App - Port 8080)
 
 ```bash
-# 启动专门用于静态资产和单页仪表盘托管的 Web 服务器
+# 启动专门用于静态资产和单页仪表盘托管 of Web 服务器
 python -m uvicorn src.app.web_server:app --host 0.0.0.0 --port 8080 --reload
 ```
 
@@ -252,13 +210,13 @@ python -m uvicorn src.app.web_server:app --host 0.0.0.0 --port 8080 --reload
 
 ### 🚀 5. 发起 curl 撞击调试流
 
-请参照最新的 [12306*Python*技术实现与落地方案.md](./docs/12306_Python_技术实现与落地方案.md) 中的 **第 4 节 (API 端点现场调用与冒烟调试指南)**，通过 6 个原子的 `curl` 请求对以下流程执行手动调试验证：
+请参照最新的 [12306_Python_技术实现与落地方案.md](./docs/12306_Python_技术实现与落地方案.md) 中的 **第 4 节 (API 端点现场调用与冒烟调试指南)**，通过 6 个原子的 `curl` 请求对以下流程执行手动调试验证：
 
 - 余票冷查询回源重算重建缓存 ──► 并发抢票预占 ──► 待支付订单创建 ──► 模拟支付扣款 ──► 触发后台 Outbox 消息循环 ──► 读写最终一致性检验。
 
 ---
 
-# 🤖 8. 关于 AI Agent 协同研发的故事 (The Agentic Story)
+# 🤖 7. 关于 AI Agent 协同研发的故事 (The Agentic Story)
 
 本项目的成功合龙是 **ChatGPT（首席架构师）** 与 **Gemini CLI（开发执行官 - YOLO 自动驾驶模式）** 协同作战的结晶：
 
