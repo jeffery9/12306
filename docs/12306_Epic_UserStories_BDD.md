@@ -29,6 +29,11 @@
      ├── US-5.1: 动态配票定价与里程费率配置 (Dynamic Revenue Pricing)
      ├── US-5.2: 可视化席位区间占用热力图 (Visual Live Heatmap)
      └── US-5.3: 应急席位划拨与官方硬锁隔离 (Emergency Requisition Block)
+
+  [ EPIC-06: 智能化座席管理与选座编排 ]
+     ├── US-6.1: 多人邻座自动分配与席位偏好 (Adjacent Allocation & Preference)
+     ├── US-6.2: 同车中途断配智能换座推荐 (Split-Seat Smart Recomposition)
+     └── US-6.3: 车厢席位平面图与点击选座 (Interactive Carriage 2D Seatmap)
 ```
 
 ---
@@ -176,6 +181,36 @@
 
 ---
 
+### 🌌 EPIC-06: 智能化座席管理与选座编排 (Smart Seat Allocation)
+
+**业务价值 (Value Proposition)**：将基础的资源扣减提升为高水准的人性化、智能化服务。通过多人邻座自动锁定技术、同车断配自愈推荐算法以及 2D 车厢动态图谱，大幅提升客流成行率与车席周转收益。
+
+#### 👤 US-6.1: 多人邻座自动分配与席位偏好
+
+- **用户故事**：作为一名与家人共同出行的**旅客**，我希望在**一次提交多人订单时系统能够自动寻找并锁定物理上相邻的座位，或者在单人出行时能自选“靠窗/过道”**，以便我们能舒适、贴近地共度旅途。
+- **验收标准 (AC-1)**：
+  - **Given (前提)**：G888 次车 01 车厢有 01A-01C（邻座对）空闲，02A（靠窗，无邻座）空闲。
+  - **When (触发动作)**：旅客 A 与 B 选择共同购票。
+  - **Then (预期结果)**：算法检测到这是一个双人组合，自动过滤单空座位，优先匹配并在单事务中锁死 01A、01C 的行锁并返回。若是单人购票并勾选“靠窗（Window）”，则算法自动挑选 02A 并加锁，完美照顾个性化偏好。
+
+#### 👤 US-6.2: 同车中途断配智能换座推荐
+
+- **用户故事**：作为一名**没买到北京到上海直达车票的急切旅客**，我希望**系统能在全车没有一个座位是全程空闲时，智能组装并推荐一个同车中途换座的拼座位方案**，以便我依然可以搭乘这一班次回家。
+- **验收标准 (AC-2)**：
+  - **Given (前提)**：G888 次车“北京->上海”直达可售票数为 0。但 01A 座位在段 1（北京-天津）空闲，02C 座位在段 2-3（天津-上海）空闲。
+  - **When (触发动作)**：旅客发起“北京->上海”的购票查询。
+  - **Then (预期结果)**：常规查询返回 0。但智能推荐引擎（Recombinator）自动识别到同车断配重组可能性，向旅客弹窗推荐：“为您找到同车换座方案：北京-天津(01A) + 天津-上海(02C)”。旅客点击确认后，系统在单事务内同时完成这两个席位不同物理段的 Redis + MySQL 原子预占。
+
+#### 👤 US-6.3: 车厢席位平面图与点击选座
+
+- **用户故事**：作为一名**对座位有强迫症的极客乘客**，我希望能够**在前端看到当前车厢的 2D 座位布局和每个座位的区间空闲热力，并可以直接点击某个空窗座位进行锁座**，以便我获得 100% 的自主掌控权。
+- **验收标准 (AC-3)**：
+  - **Given (前提)**：前端 Vue 3 Web App 中加载了 2D 车厢席位大图。
+  - **When (触发动作)**：旅客点击选中 01F 席位（其在所选区间上显示为绿色空闲）。
+  - **Then (预期结果)**：前端发送携带 `seat_id=01F` 强主键绑定的 `/reserve` 锁座呼叫。后端锁座逻辑跳过任意分配（Random Allocation），直接定向对 01F 执行排他加锁事务，抢占成功后将该 2D 坐标变为黄色/红色。
+
+---
+
 ## 3. BDD Gherkin 契约对齐文件
 
 上述 User Stories 与底层业务规则已被 100% 集成、固化至项目根目录的 BDD 特征文件 **`src/tests/features/ticketing.feature`** 中。
@@ -229,6 +264,24 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
     When the revenue manager increases the dynamic base tariff rate to 1.5 yuan per km
     And a passenger creates an order for route sequence 1 to 2 (120 km)
     Then the order payment amount should reflect the updated pricing tariff of 180.00 yuan
+
+  # 对应 US-6.1：多人出行邻座自动分配
+  Scenario: Traveling group of two passengers requests booking, receiving adjacent physical seats automatically
+    Given a clean ticketing system with train "G666" and Stations "北京", "天津", "上海"
+    And adjacent seats "01A" (Window) and "01C" (Aisle) in Carriage 1 are fully available
+    When a traveling group of 2 passengers requests to reserve seats from sequence 1 to 3
+    Then the system adjacent seat locator should lock both seats "01A" and "01C" in Carriage 1
+    And both passengers should receive unified booking details on the same order
+
+  # 对应 US-6.2：同车断配拼座换座自愈推荐
+  Scenario: No direct single seat available from start to end, system recomposes a split-seat route for the passenger
+    Given the direct ticket availability for train "G666" from sequence 1 to 4 is fully sold out
+    And Seat "01A" is available only for segment 1 to 2 (北京-天津)
+    And Seat "02C" is available only for segment 2 to 4 (天津-上海)
+    When a passenger queries tickets from sequence 1 to 4
+    Then the smart recomposition engine should propose a split-seat itinerary "Seat 01A (Seg 1-2) + Seat 02C (Seg 2-4)"
+    When the passenger confirms the split-seat itinerary
+    Then the system should atomic-reserve segment 1-2 on Seat 01A and segment 2-4 on Seat 02C in a single transaction
 ```
 
 ---
