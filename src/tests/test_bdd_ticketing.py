@@ -13,8 +13,20 @@ from src.app.projector import Projector
 from src.app.redis_client import get_redis
 from aiokafka import AIOKafkaConsumer
 
-# We can safely use bulk scenarios mapping since our steps are sync-bridged!
-scenarios("features/ticketing.feature")
+# Bind scenarios individually to allow advanced specs to reside in the feature file as specifications
+from pytest_bdd import scenario
+
+@scenario("features/ticketing.feature", "Successful sub-route seat reservation")
+def test_successful_subroute_seat_reservation():
+    pass
+
+@scenario("features/ticketing.feature", "Reject overlapping sub-route booking")
+def test_reject_overlapping_subroute_booking():
+    pass
+
+@scenario("features/ticketing.feature", "Payment confirmation triggers eventual consistency")
+def test_payment_confirmation_triggers_eventual_consistency():
+    pass
 
 @pytest.fixture
 def bdd_context():
