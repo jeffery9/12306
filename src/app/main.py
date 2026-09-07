@@ -117,3 +117,35 @@ async def cron_release(db=Depends(get_db)):
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/v1/ops/health")
+async def ops_health(db=Depends(get_db)):
+    """Liveness & Readiness health check probe for DevOps/SRE orchestration."""
+    from sqlalchemy import text
+    mysql_status = "UNKNOWN"
+    redis_status = "UNKNOWN"
+    
+    # 1. Probe MySQL Core Engine
+    try:
+        await db.execute(text("SELECT 1"))
+        mysql_status = "OK"
+    except Exception as e:
+        mysql_status = f"ERROR: {str(e)}"
+        
+    # 2. Probe Redis Pre-lock Layer
+    try:
+        redis_client = get_redis()
+        await redis_client.ping()
+        redis_status = "OK"
+    except Exception as e:
+        redis_status = f"ERROR: {str(e)}"
+        
+    overall_status = "UP" if (mysql_status == "OK" and redis_status == "OK") else "DOWN"
+    
+    return {
+        "status": overall_status,
+        "components": {
+            "mysql": mysql_status,
+            "redis": redis_status
+        }
+    }
