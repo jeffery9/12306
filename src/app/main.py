@@ -47,7 +47,7 @@ class ReserveRequest(BaseModel):
     from_station_seq: int
     to_station_seq: int
     seat_class: str
-    passenger_count: int = 1
+    passenger_ids: List[str]
 
 class SplitReserveRequest(BaseModel):
     request_id: str
@@ -76,7 +76,7 @@ class WaitlistRequest(BaseModel):
     from_station_seq: int
     to_station_seq: int
     seat_class: str
-    passenger_count: int = 1
+    passenger_ids: List[str]
 
 # 3. HTTP API Endpoints
 
@@ -131,7 +131,7 @@ async def reserve_ticket(req: ReserveRequest, db=Depends(get_db)):
             from_seq=req.from_station_seq,
             to_seq=req.to_station_seq,
             seat_class=req.seat_class,
-            passenger_count=req.passenger_count
+            passenger_ids=req.passenger_ids
         )
         await db.commit()
         return {"reservation_id": reservation_id}
@@ -171,7 +171,7 @@ async def submit_waitlist(req: WaitlistRequest, db=Depends(get_db)):
             from_seq=req.from_station_seq,
             to_seq=req.to_station_seq,
             seat_class=req.seat_class,
-            passenger_count=req.passenger_count
+            passenger_ids=req.passenger_ids
         )
         await db.commit()
         return {"waitlist_id": waitlist_id}

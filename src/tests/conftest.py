@@ -22,6 +22,14 @@ def setup_db(event_loop):
         # Flush Redis to guarantee perfect test isolation
         redis_client = get_redis()
         await redis_client.flushdb()
+
+        # Seed default passengers for easy testing
+        from src.app.models import Passenger
+        async with async_session() as session:
+            p1 = Passenger(id="PSG_001", name="张三", id_no="110101199001019999", passenger_type="ADULT")
+            p2 = Passenger(id="PSG_002", name="李四", id_no="110101199001018888", passenger_type="ADULT")
+            session.add_all([p1, p2])
+            await session.commit()
     
     event_loop.run_until_complete(_setup())
     

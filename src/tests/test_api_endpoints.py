@@ -64,7 +64,8 @@ def test_full_api_workflow(db_session, event_loop):
                     "schedule_id": schedule_id,
                     "from_station_seq": 1,
                     "to_station_seq": 2,
-                    "seat_class": "BUSINESS"
+                    "seat_class": "BUSINESS",
+                    "passenger_ids": ["PSG_001"]
                 }
             )
             assert resp.status_code == 200

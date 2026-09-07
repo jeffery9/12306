@@ -44,7 +44,8 @@ def test_order_creation_payment_and_timeout_release(db_session, event_loop):
             schedule_id=schedule_id,
             from_seq=1,
             to_seq=2,
-            seat_class="FIRST"
+            seat_class="FIRST",
+            passenger_ids=["PSG_001"]
         )
         assert res_id is not None
         await db_session.commit()
@@ -92,7 +93,8 @@ def test_order_creation_payment_and_timeout_release(db_session, event_loop):
             schedule_id=schedule_id,
             from_seq=2,
             to_seq=3,
-            seat_class="FIRST"
+            seat_class="FIRST",
+            passenger_ids=["PSG_002"]
         )
         assert res_id2 is not None
         await db_session.commit()

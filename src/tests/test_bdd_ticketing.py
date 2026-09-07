@@ -5,7 +5,7 @@ import json
 import asyncio
 from pytest_bdd import scenarios, given, when, then, parsers
 from sqlalchemy import select
-from src.app.models import Train, Station, TrainSchedule, Seat, SeatSegment, Reservation, Orders
+from src.app.models import Train, Station, TrainSchedule, Seat, SeatSegment, Reservation, Orders, Passenger, Ticket
 from src.app.reservation_service import ReservationService
 from src.app.order_service import OrderService
 from src.app.outbox_publisher import OutboxPublisher
@@ -112,13 +112,19 @@ def seat_available(bdd_context, db_session, event_loop, seat_class):
 def passenger_reserve(bdd_context, db_session, event_loop, f, t):
     async def _impl():
         schedule_id = bdd_context["schedule_id"]
+        p_id = f"PSG_BDD_{uuid.uuid4().hex[:10].upper()}"
+        p_rec = Passenger(id=p_id, name="BDD乘客", id_no=f"1101011990{uuid.uuid4().hex[:8].upper()}", passenger_type="ADULT")
+        db_session.add(p_rec)
+        await db_session.flush()
+
         res_id = await ReservationService.reserve_ticket(
             db_session=db_session,
             request_id=f"BDD_REQ_{uuid.uuid4().hex[:8].upper()}",
             schedule_id=schedule_id,
             from_seq=f,
             to_seq=t,
-            seat_class="BUSINESS"
+            seat_class="BUSINESS",
+            passenger_ids=[p_id]
         )
         bdd_context["res_id"] = res_id
         await db_session.commit()
@@ -189,13 +195,19 @@ def passenger_already_reserved(bdd_context, db_session, event_loop, f, t):
         await db_session.commit()
 
         # Pre-book 1->2 (Beijing->Tianjin)
+        p_id_a = f"PSG_BDD_{uuid.uuid4().hex[:10].upper()}"
+        p_rec_a = Passenger(id=p_id_a, name="BDD乘客A", id_no=f"1101011990{uuid.uuid4().hex[:8].upper()}", passenger_type="ADULT")
+        db_session.add(p_rec_a)
+        await db_session.flush()
+
         res_id = await ReservationService.reserve_ticket(
             db_session=db_session,
             request_id=f"BDD_ALREADY_REQ_{uuid.uuid4().hex[:8].upper()}",
             schedule_id=schedule.id,
             from_seq=f,
             to_seq=t,
-            seat_class="BUSINESS"
+            seat_class="BUSINESS",
+            passenger_ids=[p_id_a]
         )
         bdd_context["res_id"] = res_id
         await db_session.commit()
@@ -207,13 +219,19 @@ def passenger_attempts_non_overlapping(bdd_context, db_session, event_loop, f, t
     async def _impl():
         schedule_id = bdd_context["schedule_id"]
         try:
+            p_id_b = f"PSG_BDD_{uuid.uuid4().hex[:10].upper()}"
+            p_rec_b = Passenger(id=p_id_b, name="BDD乘客B", id_no=f"1101011990{uuid.uuid4().hex[:8].upper()}", passenger_type="ADULT")
+            db_session.add(p_rec_b)
+            await db_session.flush()
+
             res_id = await ReservationService.reserve_ticket(
                 db_session=db_session,
                 request_id=f"BDD_NON_OVERLAP_{uuid.uuid4().hex[:8].upper()}",
                 schedule_id=schedule_id,
                 from_seq=f,
                 to_seq=t,
-                seat_class="BUSINESS"
+                seat_class="BUSINESS",
+                passenger_ids=[p_id_b]
             )
             bdd_context["non_overlap_res_id"] = res_id
             await db_session.commit()
@@ -227,13 +245,19 @@ def passenger_attempts_overlapping(bdd_context, db_session, event_loop, f, t):
     async def _impl():
         schedule_id = bdd_context["schedule_id"]
         try:
+            p_id_c = f"PSG_BDD_{uuid.uuid4().hex[:10].upper()}"
+            p_rec_c = Passenger(id=p_id_c, name="BDD乘客C", id_no=f"1101011990{uuid.uuid4().hex[:8].upper()}", passenger_type="ADULT")
+            db_session.add(p_rec_c)
+            await db_session.flush()
+
             res_id = await ReservationService.reserve_ticket(
                 db_session=db_session,
                 request_id=f"BDD_OVERLAP_{uuid.uuid4().hex[:8].upper()}",
                 schedule_id=schedule_id,
                 from_seq=f,
                 to_seq=t,
-                seat_class="BUSINESS"
+                seat_class="BUSINESS",
+                passenger_ids=[p_id_c]
             )
             bdd_context["overlap_res_id"] = res_id
             await db_session.commit()
@@ -381,13 +405,19 @@ def passenger_attempts_regular_reserve_impl(bdd_context, db_session, event_loop,
     async def _impl():
         schedule_id = bdd_context["schedule_id"]
         try:
+            p_id = f"PSG_BDD_{uuid.uuid4().hex[:10].upper()}"
+            p_rec = Passenger(id=p_id, name="BDD乘客", id_no=f"1101011990{uuid.uuid4().hex[:8].upper()}", passenger_type="ADULT")
+            db_session.add(p_rec)
+            await db_session.flush()
+
             res_id = await ReservationService.reserve_ticket(
                 db_session=db_session,
                 request_id=f"BDD_REG_PASS_{uuid.uuid4().hex[:8].upper()}",
                 schedule_id=schedule_id,
                 from_seq=f,
                 to_seq=t,
-                seat_class="BUSINESS"
+                seat_class="BUSINESS",
+                passenger_ids=[p_id]
             )
             bdd_context["reg_res_id"] = res_id
             await db_session.commit()
@@ -432,13 +462,19 @@ def passenger_creates_dynamic_order(bdd_context, db_session, event_loop, f, t, d
         await db_session.commit()
 
         # Reserve
+        p_id = f"PSG_BDD_{uuid.uuid4().hex[:10].upper()}"
+        p_rec = Passenger(id=p_id, name="BDD乘客", id_no=f"1101011990{uuid.uuid4().hex[:8].upper()}", passenger_type="ADULT")
+        db_session.add(p_rec)
+        await db_session.flush()
+
         res_id = await ReservationService.reserve_ticket(
             db_session=db_session,
             request_id=f"BDD_DYN_REQ_{uuid.uuid4().hex[:8].upper()}",
             schedule_id=schedule.id,
             from_seq=f,
             to_seq=t,
-            seat_class="BUSINESS"
+            seat_class="BUSINESS",
+            passenger_ids=[p_id]
         )
 
         # Create Order passing amount=0 to trigger distance pricing calculation!
@@ -489,6 +525,14 @@ def seeding_adjacent_seats(bdd_context, db_session, event_loop, s1, s2, carriage
 def traveling_group_reserve(bdd_context, db_session, event_loop, count, f, t):
     async def _impl():
         schedule_id = bdd_context["schedule_id"]
+        passenger_ids = []
+        for i in range(count):
+            p_id = f"PSG_BDD_{i}_{uuid.uuid4().hex[:8].upper()}"
+            p_rec = Passenger(id=p_id, name=f"BDD乘客_{i}", id_no=f"1101011990{uuid.uuid4().hex[:8].upper()}", passenger_type="ADULT")
+            db_session.add(p_rec)
+            passenger_ids.append(p_id)
+        await db_session.flush()
+
         res_id = await ReservationService.reserve_ticket(
             db_session=db_session,
             request_id=f"BDD_GRP_{uuid.uuid4().hex[:8].upper()}",
@@ -496,7 +540,7 @@ def traveling_group_reserve(bdd_context, db_session, event_loop, count, f, t):
             from_seq=f,
             to_seq=t,
             seat_class="BUSINESS",
-            passenger_count=count
+            passenger_ids=passenger_ids
         )
         bdd_context["res_id"] = res_id
         await db_session.commit()
@@ -665,13 +709,19 @@ def passenger_reserves_short_distance_safeguard(bdd_context, db_session, event_l
     async def _impl():
         schedule_id = bdd_context["schedule_id"]
         try:
+            p_id = f"PSG_BDD_{uuid.uuid4().hex[:10].upper()}"
+            p_rec = Passenger(id=p_id, name="BDD乘客", id_no=f"1101011990{uuid.uuid4().hex[:8].upper()}", passenger_type="ADULT")
+            db_session.add(p_rec)
+            await db_session.flush()
+
             res_id = await ReservationService.reserve_ticket(
                 db_session=db_session,
                 request_id=f"BDD_SHORT_LMT_{uuid.uuid4().hex[:8].upper()}",
                 schedule_id=schedule_id,
                 from_seq=f,
                 to_seq=t,
-                seat_class="BUSINESS"
+                seat_class="BUSINESS",
+                passenger_ids=[p_id]
             )
             bdd_context["short_res_id"] = res_id
             await db_session.commit()
@@ -689,13 +739,19 @@ def passenger_reserves_full_journey_safeguard(bdd_context, db_session, event_loo
     async def _impl():
         schedule_id = bdd_context["schedule_id"]
         try:
+            p_id = f"PSG_BDD_{uuid.uuid4().hex[:10].upper()}"
+            p_rec = Passenger(id=p_id, name="BDD乘客", id_no=f"1101011990{uuid.uuid4().hex[:8].upper()}", passenger_type="ADULT")
+            db_session.add(p_rec)
+            await db_session.flush()
+
             res_id = await ReservationService.reserve_ticket(
                 db_session=db_session,
                 request_id=f"BDD_FULL_LMT_{uuid.uuid4().hex[:8].upper()}",
                 schedule_id=schedule_id,
                 from_seq=f,
                 to_seq=t,
-                seat_class="BUSINESS"
+                seat_class="BUSINESS",
+                passenger_ids=[p_id]
             )
             bdd_context["full_res_id"] = res_id
             await db_session.commit()

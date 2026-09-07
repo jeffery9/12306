@@ -4,7 +4,7 @@ import logging
 from typing import List, Union, Dict, Any
 from sqlalchemy import select
 from src.app.config import settings
-from src.app.models import Seat, SeatSegment, Reservation, OutboxEvent, TrainSchedule, Station
+from src.app.models import Seat, SeatSegment, Reservation, OutboxEvent, TrainSchedule, Station, Passenger, Ticket
 from src.app.redis_client import get_redis, reserve_seat_lua, release_seat_lua
 
 logger = logging.getLogger(__name__)
@@ -26,8 +26,31 @@ class ReservationService:
         from_seq: int,
         to_seq: int,
         seat_class: str,
-        passenger_count: int = 1
+        passenger_ids: List[str]
     ) -> str:
+        # 0. Check Passenger Existences and Real-Name Collisions
+        for pid in passenger_ids:
+            p_stmt = select(Passenger).where(Passenger.id == pid)
+            passenger_record = (await db_session.execute(p_stmt)).scalar()
+            if not passenger_record:
+                raise Exception(f"Passenger {pid} is not registered")
+
+            # Spatiotemporal Real-name Collision Detection
+            collision_stmt = select(Passenger.name, Passenger.id_no).join(
+                Ticket, Ticket.passenger_id == Passenger.id
+            ).join(
+                Reservation, Ticket.reservation_id == Reservation.id
+            ).where(
+                Reservation.schedule_id == schedule_id,
+                Ticket.passenger_id == pid,
+                Reservation.state.in_(["HELD", "CONFIRMED"])
+            )
+            collision = (await db_session.execute(collision_stmt)).first()
+            if collision:
+                raise Exception(f"Passenger {collision[0]} ({collision[1]}) already has a conflicting booking on this train schedule")
+
+        passenger_count = len(passenger_ids)
+
         # 1. Compute the bitmask for the requested interval segments
         mask = 0
         for seg in range(from_seq, to_seq):
@@ -201,6 +224,29 @@ class ReservationService:
                 expires_at=expires_at
             )
             db_session.add(res_record)
+
+            # Create Tickets for all passengers
+            for idx, pid in enumerate(passenger_ids):
+                ticket_id = f"TCK_{uuid.uuid4().hex[:12].upper()}"
+                
+                # Fetch passenger type for discount computation (STUDENT discount 20% off)
+                p_stmt = select(Passenger).where(Passenger.id == pid)
+                p_rec = (await db_session.execute(p_stmt)).scalar()
+                
+                base_price = 100.00
+                if p_rec and p_rec.passenger_type == "STUDENT":
+                    price = base_price * 0.8  # Student Discount!
+                else:
+                    price = base_price
+
+                t_record = Ticket(
+                    id=ticket_id,
+                    reservation_id=reservation_id,
+                    passenger_id=pid,
+                    seat_id=reserved_seat_ids[idx],
+                    price=price
+                )
+                db_session.add(t_record)
 
             # Insert Transaction Outbox Event
             outbox_event = OutboxEvent(
@@ -457,7 +503,7 @@ class ReservationService:
         from_seq: int,
         to_seq: int,
         seat_class: str,
-        passenger_count: int = 1
+        passenger_ids: List[str]
     ) -> str:
         """TRS: Accept a waitlist submission when seats are sold out, and write audit trail in Outbox."""
         from src.app.models import Waitlist
@@ -472,6 +518,27 @@ class ReservationService:
         if from_seq >= to_seq:
             raise Exception("Invalid station sequence: from_seq must be less than to_seq")
 
+        # Check Passenger Existences and Real-Name Collisions
+        for pid in passenger_ids:
+            p_stmt = select(Passenger).where(Passenger.id == pid)
+            passenger_record = (await db_session.execute(p_stmt)).scalar()
+            if not passenger_record:
+                raise Exception(f"Passenger {pid} is not registered")
+
+            # Spatiotemporal Real-name Collision Detection
+            collision_stmt = select(Passenger.name, Passenger.id_no).join(
+                Ticket, Ticket.passenger_id == Passenger.id
+            ).join(
+                Reservation, Ticket.reservation_id == Reservation.id
+            ).where(
+                Reservation.schedule_id == schedule_id,
+                Ticket.passenger_id == pid,
+                Reservation.state.in_(["HELD", "CONFIRMED"])
+            )
+            collision = (await db_session.execute(collision_stmt)).first()
+            if collision:
+                raise Exception(f"Passenger {collision[0]} ({collision[1]}) already has a conflicting booking on this train schedule")
+
         waitlist_id = "WL_" + str(uuid.uuid4().hex[:12].upper())
         wl_item = Waitlist(
             id=waitlist_id,
@@ -480,7 +547,7 @@ class ReservationService:
             from_segment=from_seq,
             to_segment=to_seq,
             seat_class=seat_class,
-            passenger_count=passenger_count,
+            passenger_ids=passenger_ids,
             state="QUEUED"
         )
         db_session.add(wl_item)
@@ -499,7 +566,7 @@ class ReservationService:
                 "from_segment": from_seq,
                 "to_segment": to_seq,
                 "seat_class": seat_class,
-                "passenger_count": passenger_count
+                "passenger_ids": passenger_ids
             },
             status="NEW"
         )
@@ -537,7 +604,7 @@ class ReservationService:
                         from_seq=wl.from_segment,
                         to_seq=wl.to_segment,
                         seat_class=wl.seat_class,
-                        passenger_count=wl.passenger_count
+                        passenger_ids=wl.passenger_ids
                     )
                     
                     # Succeeded! Update waitlist record state
@@ -556,7 +623,7 @@ class ReservationService:
                             "from_segment": wl.from_segment,
                             "to_segment": wl.to_segment,
                             "seat_class": wl.seat_class,
-                            "passenger_count": wl.passenger_count
+                            "passenger_ids": wl.passenger_ids
                         },
                         status="NEW"
                     )
