@@ -3,7 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>12306 Next-Gen High-Concurrency Ticketing System</title>
+    <title>12306 Next-Gen Ticketing Dashboard (Vue 3)</title>
+    <!-- Import Vue 3 Global Build from high-speed reliable CDN -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <style>
       /* Modern futuristic dark slate theme with glowing accents */
       :root {
@@ -147,7 +149,6 @@
       .track-line-active {
         position: absolute;
         left: 10%;
-        width: 0%; /* Dynamic based on selection */
         top: 48%;
         height: 4px;
         background: linear-gradient(90deg, var(--color-rail-blue), #818cf8);
@@ -537,19 +538,19 @@
     </style>
   </head>
   <body>
-    <div class="container">
+    <div id="app" class="container">
       <!-- Header -->
       <header>
         <h1>12306 Next-Gen Ticketing Dashboard</h1>
         <p>
           基于 CQRS
           读写分离、内存位掩码预占与事务发件箱架构的高并发区间票务分配系统 MVP
-          演示端
+          (Vue 3 响应式驱动)
         </p>
         <span class="train-badge">复兴号 G888 次 ── 商务特等座舱</span>
       </header>
 
-      <!-- Main Router Selection Card -->
+      <!-- 1. Route Selector Card -->
       <div class="card">
         <div class="card-title">
           <svg
@@ -568,64 +569,55 @@
           1. 选择乘坐区间 (Select Route)
         </div>
 
-        <!-- Rail Track Visualizer -->
+        <!-- Interactive Reactive Rail Track Visualizer -->
         <div class="track-container">
           <div class="track-line-bg"></div>
-          <div id="active-track" class="track-line-active"></div>
+          <!-- Reactive track highlight line dynamically linked to Computed property -->
+          <div class="track-line-active" :style="activeTrackStyle"></div>
 
+          <!-- Generate Station Nodes with standard Vue declarative rendering -->
           <div
+            v-for="station in stations"
+            :key="station.seq"
             class="station-node"
-            id="node-1"
-            onclick="selectStationByNode(1)"
+            :class="{ active: station.seq >= fromStation && station.seq <= toStation }"
+            @click="selectStation(station.seq)"
           >
             <div class="station-dot"></div>
-            <div class="station-name">北京 (1)</div>
-          </div>
-          <div
-            class="station-node"
-            id="node-2"
-            onclick="selectStationByNode(2)"
-          >
-            <div class="station-dot"></div>
-            <div class="station-name">天津 (2)</div>
-          </div>
-          <div
-            class="station-node"
-            id="node-3"
-            onclick="selectStationByNode(3)"
-          >
-            <div class="station-dot"></div>
-            <div class="station-name">济南 (3)</div>
-          </div>
-          <div
-            class="station-node"
-            id="node-4"
-            onclick="selectStationByNode(4)"
-          >
-            <div class="station-dot"></div>
-            <div class="station-name">上海 (4)</div>
+            <div class="station-name">
+              {{ station.name }} ({{ station.seq }})
+            </div>
           </div>
         </div>
 
         <div class="inputs-row">
           <div class="input-group">
             <label for="from-station">出发站 (From)</label>
-            <select id="from-station" onchange="updateTrackVisual()">
-              <option value="1" selected>北京 (Seq 1)</option>
-              <option value="2">天津 (Seq 2)</option>
-              <option value="3">济南 (Seq 3)</option>
+            <select id="from-station" v-model.number="fromStation">
+              <option
+                v-for="s in stations.slice(0, 3)"
+                :key="s.seq"
+                :value="s.seq"
+              >
+                {{ s.name }} (Seq {{ s.seq }})
+              </option>
             </select>
           </div>
           <div class="input-group">
             <label for="to-station">到达站 (To)</label>
-            <select id="to-station" onchange="updateTrackVisual()">
-              <option value="2">天津 (Seq 2)</option>
-              <option value="3">济南 (Seq 3)</option>
-              <option value="4" selected>上海 (Seq 4)</option>
+            <select id="to-station" v-model.number="toStation">
+              <option
+                v-for="s in stations.slice(1)"
+                :key="s.seq"
+                :value="s.seq"
+                :disabled="s.seq <= fromStation"
+              >
+                {{ s.name }} (Seq {{ s.seq }})
+              </option>
             </select>
           </div>
           <div class="input-group" style="justify-content: flex-end">
-            <button class="btn-primary" onclick="queryAvailability()">
+            <button class="btn-primary" @click="queryAvailability">
               <svg
                 width="18"
                 height="18"
@@ -643,9 +635,9 @@
         </div>
       </div>
 
-      <!-- Multi-Panel Details Grid -->
+      <!-- Multi-Panel Split Panels Layout -->
       <div class="panels-grid">
-        <!-- Query Result and Lock Action -->
+        <!-- Left Panel: Ticket Query & Pre-reservation -->
         <div class="card">
           <div class="card-title">
             <svg
@@ -671,10 +663,11 @@
               margin-bottom: 0.75rem;
             "
           >
-            查询和库存引擎分离。本切片余票信息来自高并发 Redis 读视图。
+            查询和库存引擎隔离。本切片余票信息来自高并发 Redis 读视图。
           </p>
 
-          <div id="query-placeholder" class="ticket-status-box">
+          <!-- Pre-query empty state -->
+          <div v-if="availableSeats === null" class="ticket-status-box">
             <div
               style="
                 color: var(--text-secondary);
@@ -687,27 +680,35 @@
             </div>
           </div>
 
-          <div id="query-result-box" class="ticket-status-box hidden">
+          <!-- Reactive query result display -->
+          <div
+            v-else
+            class="ticket-status-box"
+            :class="availableSeats > 0 ? 'status-available' : 'status-soldout'"
+          >
             <div class="ticket-info">
               <span class="seat-class">BUSINESS (商务座舱)</span>
               <div>
-                <span id="cache-state" class="cache-badge badge-hit"
-                  >Redis Hit</span
+                <span
+                  :class="['cache-badge', isCacheMiss ? 'badge-miss' : 'badge-hit']"
                 >
+                  {{ isCacheMiss ? 'Cache Miss - Self Healing' : 'Redis Cache
+                  Hit' }}
+                </span>
               </div>
             </div>
             <div class="ticket-count">
-              <span id="available-count" class="count-number">--</span>
+              <span class="count-number">{{ availableSeats }}</span>
               <span class="count-unit">张</span>
             </div>
           </div>
 
           <button
-            id="reserve-btn"
-            class="btn-primary btn-disabled"
+            class="btn-primary"
+            :class="{ 'btn-disabled': isReserveDisabled }"
             style="width: 100%; margin-top: 1.5rem"
-            onclick="reserveTicket()"
-            disabled
+            @click="reserveTicket"
+            :disabled="isReserveDisabled"
           >
             <svg
               width="18"
@@ -726,7 +727,7 @@
           </button>
         </div>
 
-        <!-- Billing and Reservation Details -->
+        <!-- Right Panel: Billing & Transactions -->
         <div class="card">
           <div class="card-title">
             <svg
@@ -743,8 +744,8 @@
             3. 收费、订单与最终确认
           </div>
 
-          <!-- Holding State Dashboard -->
-          <div id="holding-card" class="hidden">
+          <!-- Case A: Holding State with active countdown and progress bar -->
+          <div v-if="reservationId && !isPaid">
             <p
               style="
                 color: var(--text-secondary);
@@ -758,14 +759,20 @@
             <div class="reservation-details">
               <div class="res-row">
                 <span class="res-label">锁定预约 ID:</span>
-                <span id="holding-res-id" class="res-value">RES_000000</span>
+                <span class="res-value">{{ reservationId }}</span>
               </div>
               <div class="res-row">
                 <span class="res-label">支付倒计时:</span>
-                <span id="timer-text" class="res-value glow-amber">60 秒</span>
+                <span
+                  class="res-value glow-amber"
+                  :style="{ color: secondsLeft <= 10 ? 'var(--color-rose)' : 'var(--color-amber)' }"
+                >
+                  {{ secondsLeft > 0 ? secondsLeft + ' 秒' : '已过期' }}
+                </span>
               </div>
               <div class="progress-container">
-                <div id="progress-bar" class="progress-bar"></div>
+                <!-- Pipelined reactive progress bar linked to computed style -->
+                <div class="progress-bar" :style="progressBarStyle"></div>
               </div>
             </div>
 
@@ -783,7 +790,12 @@
                 </div>
               </div>
               <div class="input-group" style="justify-content: flex-end">
-                <button class="btn-success" onclick="payOrder()">
+                <button
+                  class="btn-success"
+                  @click="payOrder"
+                  :disabled="secondsLeft <= 0"
+                  :class="{ 'btn-disabled': secondsLeft <= 0 }"
+                >
                   <svg
                     width="18"
                     height="18"
@@ -801,8 +813,8 @@
             </div>
           </div>
 
-          <!-- Success Box State -->
-          <div id="success-card" class="success-box hidden">
+          <!-- Case B: Success State displaying final confirmed ticket -->
+          <div v-else-if="isPaid" class="success-box">
             <div class="success-icon">✓</div>
             <div class="success-title">车票预定成功并已支付！</div>
             <p style="color: var(--text-secondary); font-size: 0.85rem">
@@ -818,15 +830,15 @@
             <button
               class="btn-outline"
               style="width: 100%; margin-top: 0.5rem"
-              onclick="resetWorkflow()"
+              @click="resetWorkflow"
             >
               返回继续预订
             </button>
           </div>
 
-          <!-- Empty Placeholder -->
+          <!-- Case C: Empty Placeholder -->
           <div
-            id="bill-placeholder"
+            v-else
             style="
               color: var(--text-secondary);
               font-size: 0.9rem;
@@ -852,7 +864,7 @@
         </div>
       </div>
 
-      <!-- Execution Log Console -->
+      <!-- System Console Logs -->
       <div class="card">
         <div class="card-title">
           <svg
@@ -869,17 +881,16 @@
           4. 实时系统执行日志 (Agent Console Logs)
         </div>
         <div id="console-logs" class="console-logs">
-          <div class="log-entry">
-            <span class="log-time">[00:00:00]</span>
-            <span class="log-text" style="color: var(--text-secondary)"
-              >12306 前端交互系统初始化成功，后端路由监听在
-              http://localhost:8000</span
+          <div class="log-entry" v-for="(log, idx) in logs" :key="idx">
+            <span class="log-time">[{{ log.time }}]</span>
+            <span class="log-text" :style="{ color: log.color }"
+              >{{ log.text }}</span
             >
           </div>
         </div>
       </div>
 
-      <!-- Admin Operations Card -->
+      <!-- Admin/Cron Dashboard Card -->
       <div class="card" style="border-color: rgba(245, 158, 11, 0.15)">
         <div class="card-title" style="color: var(--color-amber)">
           <svg
@@ -903,7 +914,7 @@
             Job）”。当系统中有【未支付超时】的占位订购单时，点击本按钮将原子性倒退
             Redis 与 MySQL 中的位掩码状态，释放座位，让其余重置回库。
           </div>
-          <button class="btn-outline" onclick="triggerCronRelease()">
+          <button class="btn-outline" @click="triggerCronRelease">
             <svg
               width="18"
               height="18"
@@ -923,404 +934,375 @@
     </div>
 
     <script>
-      // Configuration
-      const BACKEND_URL = "http://localhost:8000";
-      const SCHEDULE_ID = 1;
-      const SEAT_CLASS = "BUSINESS";
+      const { createApp, ref, computed, watch, onMounted } = Vue;
 
-      // App State
-      let currentReservationId = null;
-      let currentOrderId = null;
-      let hasQueriedAtLeastOnce = false;
-      let queryMissCount = 0; // For simulating Cache Miss display
-      let countdownTimer = null;
-      let secondsLeft = 60;
+      createApp({
+        setup() {
+          // Configuration Constants
+          const BACKEND_URL = "http://localhost:8000";
+          const SCHEDULE_ID = 1;
+          const SEAT_CLASS = "BUSINESS";
 
-      // Run track highlight on init
-      window.onload = function () {
-        updateTrackVisual();
-        log("Web App 资源加载完成，等待旅客查询操作...");
-      };
+          // Stations Static Data
+          const stations = [
+            { seq: 1, name: "北京" },
+            { seq: 2, name: "天津" },
+            { seq: 3, name: "济南" },
+            { seq: 4, name: "上海" },
+          ];
 
-      // Logging helper
-      function log(message, color = null) {
-        const consoleLogs = document.getElementById("console-logs");
-        const timeStr = new Date().toTimeString().split(" ")[0];
+          // Reactive State Variables
+          const fromStation = ref(1);
+          const toStation = ref(4);
+          const availableSeats = ref(null);
+          const isCacheMiss = ref(false);
+          const hasQueried = ref(false);
+          const queryMissCount = ref(0);
 
-        const entry = document.createElement("div");
-        entry.className = "log-entry";
+          const reservationId = ref(null);
+          const orderId = ref(null);
+          const secondsLeft = ref(60);
+          const isPaid = ref(false);
+          const logs = ref([]);
 
-        const timeSpan = document.createElement("span");
-        timeSpan.className = "log-time";
-        timeSpan.innerText = `[${timeStr}]`;
+          let countdownInterval = null;
 
-        const textSpan = document.createElement("span");
-        textSpan.className = "log-text";
-        textSpan.innerText = message;
-        if (color) {
-          textSpan.style.color = color;
-        }
+          // Log Console Writer Helper
+          const pushLog = (text, color = null) => {
+            const timeStr = new Date().toTimeString().split(" ")[0];
+            logs.value.push({ time: timeStr, text, color });
 
-        entry.appendChild(timeSpan);
-        entry.appendChild(textSpan);
-        consoleLogs.appendChild(entry);
+            // Auto scroll logger on next DOM tick
+            Vue.nextTick(() => {
+              const consoleLogs = document.getElementById("console-logs");
+              if (consoleLogs) {
+                consoleLogs.scrollTop = consoleLogs.scrollHeight;
+              }
+            });
+          };
 
-        // Auto scroll to bottom
-        consoleLogs.scrollTop = consoleLogs.scrollHeight;
-      }
-
-      // Dynamic Track Visual Highlight based on selected sequence values
-      function updateTrackVisual() {
-        const fromVal = parseInt(document.getElementById("from-station").value);
-        const toVal = parseInt(document.getElementById("to-station").value);
-
-        // Validation: To must be strictly greater than From
-        if (toVal <= fromVal) {
-          document.getElementById("to-station").value = fromVal + 1;
-          updateTrackVisual();
-          return;
-        }
-
-        // Highlight nodes
-        for (let i = 1; i <= 4; i++) {
-          const node = document.getElementById(`node-${i}`);
-          if (i >= fromVal && i <= toVal) {
-            node.classList.add("active");
-          } else {
-            node.classList.remove("active");
-          }
-        }
-
-        // Calculate active track width and position
-        // Station 1 is at 0%, 2 at 33.3%, 3 at 66.6%, 4 at 100% of the active zone.
-        const activeTrack = document.getElementById("active-track");
-
-        // Node offsets in percentages (Beijing to Shanghai)
-        const leftPercent = (fromVal - 1) * 33.33;
-        const widthPercent = (toVal - fromVal) * 33.33;
-
-        // Apply offsets
-        activeTrack.style.left = `calc(10% + ${leftPercent * 0.8}%)`;
-        activeTrack.style.width = `${widthPercent * 0.8}%`;
-
-        log(`路由区间更新为: Seq ${fromVal} ──► Seq ${toVal}`);
-      }
-
-      // Handle station click visually and sync select values
-      function selectStationByNode(nodeIndex) {
-        const fromSelect = document.getElementById("from-station");
-        const toSelect = document.getElementById("to-station");
-
-        if (nodeIndex === 4) {
-          // Can only be To station
-          toSelect.value = 4;
-        } else {
-          // Set as From station
-          fromSelect.value = nodeIndex;
-        }
-        updateTrackVisual();
-      }
-
-      // 1. QUERY AVAILABILITY (GET /api/v1/query)
-      async function queryAvailability() {
-        const fromSeq = parseInt(document.getElementById("from-station").value);
-        const toSeq = parseInt(document.getElementById("to-station").value);
-
-        log(`[Query] 向后端发起余票查询 (Route: ${fromSeq} -> ${toSeq})...`);
-
-        try {
-          const url = `${BACKEND_URL}/api/v1/query?schedule_id=${SCHEDULE_ID}&from_station_seq=${fromSeq}&to_station_seq=${toSeq}&seat_class=${SEAT_CLASS}`;
-          const response = await fetch(url);
-
-          if (!response.ok) {
-            throw new Error(`HTTP Error Status: ${response.status}`);
-          }
-
-          const data = await response.json();
-          const seats = data.available_seats;
-
-          // UI Changes
-          document.getElementById("query-placeholder").classList.add("hidden");
-          const resultBox = document.getElementById("query-result-box");
-          resultBox.classList.remove("hidden");
-
-          const countNum = document.getElementById("available-count");
-          countNum.innerText = seats;
-
-          const badge = document.getElementById("cache-state");
-
-          // Mocking a local cold-start Projection hit/miss simulation for better UX demonstration
-          if (
-            !hasQueriedAtLeastOnce ||
-            (fromSeq === 1 && toSeq === 3 && queryMissCount === 0)
-          ) {
-            // If it is the first query or a cold projection Miss
-            badge.className = "cache-badge badge-miss";
-            badge.innerText = "Cache Miss - Self Healing";
-            log(
-              `[CQRS-Heal] 读缓存未命中 (Cache Miss)，写侧投影器已异步触发冷源重算并重新建立 Redis 哈希视图！`,
-              "var(--color-amber)",
-            );
-            if (fromSeq === 1 && toSeq === 3) queryMissCount++;
-          } else {
-            badge.className = "cache-badge badge-hit";
-            badge.innerText = "Redis Cache Hit";
-            log(
-              `[CQRS-Hit] 读缓存秒命中 (Redis Hit)，当前可用商务票数: ${seats} 张`,
-              "var(--color-emerald)",
-            );
-          }
-
-          hasQueriedAtLeastOnce = true;
-
-          const reserveBtn = document.getElementById("reserve-btn");
-          if (seats > 0) {
-            resultBox.className = "ticket-status-box status-available";
-            reserveBtn.className = "btn-primary";
-            reserveBtn.disabled = false;
-          } else {
-            resultBox.className = "ticket-status-box status-soldout";
-            reserveBtn.className = "btn-primary btn-disabled";
-            reserveBtn.disabled = true;
-            log(
-              `[SOLD_OUT] 很抱歉，当前区间可分配席位已被买断售罄！`,
-              "var(--color-rose)",
-            );
-          }
-        } catch (error) {
-          log(
-            `[Error] 余票查询失败: ${error.message}. 请确保 Uvicorn 后端在 http://localhost:8000 运行并已拉起 Docker。`,
-            "var(--color-rose)",
-          );
-          alert("API 网络连通性失败，请查看日志控制台");
-        }
-      }
-
-      // 2. RESERVE TICKET (POST /api/v1/reserve)
-      async function reserveTicket() {
-        const fromSeq = parseInt(document.getElementById("from-station").value);
-        const toSeq = parseInt(document.getElementById("to-station").value);
-        const reqId =
-          "REQ_WEB_" + Math.random().toString(36).substr(2, 9).toUpperCase();
-
-        log(`[Reserve] 正在向分配中心预留座位，Request ID: ${reqId}...`);
-
-        try {
-          const url = `${BACKEND_URL}/api/v1/reserve`;
-          const response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              request_id: reqId,
-              schedule_id: SCHEDULE_ID,
-              from_station_seq: fromSeq,
-              to_station_seq: toSeq,
-              seat_class: SEAT_CLASS,
-            }),
+          // COMPUTED: Train Track Highlight Style
+          const activeTrackStyle = computed(() => {
+            const leftPercent = (fromStation.value - 1) * 33.33;
+            const widthPercent = (toStation.value - fromStation.value) * 33.33;
+            return {
+              left: `calc(10% + ${leftPercent * 0.8}%)`,
+              width: `${widthPercent * 0.8}%`,
+            };
           });
 
-          if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(
-              errorData.detail || `HTTP Error ${response.status}`,
-            );
-          }
-
-          const data = await response.json();
-          currentReservationId = data.reservation_id;
-
-          log(
-            `[Success] 预占锁座成功！Reservation ID: ${currentReservationId}`,
-            "var(--color-emerald)",
-          );
-          log(
-            `[Lock] MySQL 区间行锁、Redis 位掩码已原子加锁，预留状态为: HELD`,
-            "var(--color-amber)",
-          );
-
-          // UI transition to holding state
-          document.getElementById("bill-placeholder").classList.add("hidden");
-          document.getElementById("holding-card").classList.remove("hidden");
-          document.getElementById("holding-res-id").innerText =
-            currentReservationId;
-
-          // Start holding timer
-          startCountdown();
-        } catch (error) {
-          log(`[Error] 占座锁定失败: ${error.message}`, "var(--color-rose)");
-          alert(`抢票失败: ${error.message}`);
-        }
-      }
-
-      // Start 60s holding timeout countdown visualizer
-      function startCountdown() {
-        if (countdownTimer) clearInterval(countdownTimer);
-
-        secondsLeft = 60;
-        const timerText = document.getElementById("timer-text");
-        const progressBar = document.getElementById("progress-bar");
-
-        progressBar.style.transition = "none";
-        progressBar.style.width = "100%";
-
-        // Force reflow
-        progressBar.offsetHeight;
-        progressBar.style.transition = "width 60s linear";
-        progressBar.style.width = "0%";
-
-        countdownTimer = setInterval(() => {
-          secondsLeft--;
-          timerText.innerText = `${secondsLeft} 秒`;
-
-          if (secondsLeft <= 10) {
-            timerText.style.color = "var(--color-rose)";
-          } else {
-            timerText.style.color = "var(--color-amber)";
-          }
-
-          if (secondsLeft <= 0) {
-            clearInterval(countdownTimer);
-            timerText.innerText = "已过期";
-            log(
-              "[Timeout] 预占已超过 60s 支付限期，该订单在底层已被废弃。请点击下方管理按钮运行定时任务强制回收！",
-              "var(--color-rose)",
-            );
-          }
-        }, 1000);
-      }
-
-      // 3. CREATE ORDER & PAY ORDER (POST /api/v1/order -> POST /api/v1/pay)
-      async function payOrder() {
-        if (secondsLeft <= 0) {
-          alert("订单已超时失效，请重新预占！");
-          return;
-        }
-
-        const reqId =
-          "REQ_PAY_" + Math.random().toString(36).substr(2, 9).toUpperCase();
-        log(`[Pay] 正在为预约单 ${currentReservationId} 创建正式待付订单...`);
-
-        try {
-          // Step 1: Create Order
-          const orderUrl = `${BACKEND_URL}/api/v1/order`;
-          const orderResponse = await fetch(orderUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              request_id: reqId,
-              reservation_id: currentReservationId,
-              amount: 250.0,
-            }),
+          // COMPUTED: Live Countdown Progress Bar style
+          const progressBarStyle = computed(() => {
+            if (secondsLeft.value <= 0) return { width: "0%" };
+            return {
+              width: `${(secondsLeft.value / 60) * 100}%`,
+              transition: "width 1s linear",
+            };
           });
 
-          if (!orderResponse.ok) {
-            const errorData = await orderResponse.json();
-            throw new Error(`创建订单失败: ${errorData.detail}`);
-          }
-
-          const orderData = await orderResponse.json();
-          currentOrderId = orderData.order_id;
-          log(
-            `[Order] 订单生成成功，ID: ${currentOrderId}，进入状态: WAITING_PAYMENT`,
-          );
-
-          // Step 2: Pay Order
-          log(`[Gateway] 正在调起银行扣款网关并核销订单...`);
-          const payUrl = `${BACKEND_URL}/api/v1/pay`;
-          const payResponse = await fetch(payUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              order_id: currentOrderId,
-            }),
+          // COMPUTED: Is Reservation Button Disabled
+          const isReserveDisabled = computed(() => {
+            return (
+              availableSeats.value === null ||
+              availableSeats.value <= 0 ||
+              isPaid.value
+            );
           });
 
-          if (!payResponse.ok) {
-            const errorData = await payResponse.json();
-            throw new Error(`订单支付失败: ${errorData.detail}`);
-          }
+          // WATCHER: Reset query state when station selection changes
+          watch([fromStation, toStation], ([newFrom, newTo]) => {
+            // Keep "To Station" greater than "From Station"
+            if (newTo <= newFrom) {
+              toStation.value = newFrom + 1;
+              return;
+            }
+            availableSeats.value = null; // Reset results to force fresh query
+            pushLog(`路由区间更新为: Seq ${newFrom} ──► Seq ${newTo}`);
+          });
 
-          const payResult = await payResponse.json();
-          if (payResult.success) {
-            // Stop timer
-            if (countdownTimer) clearInterval(countdownTimer);
+          // Actions: User selection via station nodes click
+          const selectStation = (seq) => {
+            if (seq === 4) {
+              toStation.value = 4;
+            } else {
+              fromStation.value = seq;
+            }
+          };
 
-            log(
-              `[Success] 支付成功！状态机转移为: CONFIRMED。席位永久段锁已被原子占领！`,
-              "var(--color-emerald)",
-            );
-            log(
-              `[Outbox] 事务性发件箱已写入 "ORDER_PAID" 物理事件，准备通知高并发 Kafka 进行一致性投影。`,
-              "var(--color-rail-blue)",
-            );
-
-            // UI Transitions
-            document.getElementById("holding-card").classList.add("hidden");
-            document.getElementById("success-card").classList.remove("hidden");
-          } else {
-            throw new Error("扣款网关返回失败");
-          }
-        } catch (error) {
-          log(`[Error] 支付失败: ${error.message}`, "var(--color-rose)");
-          alert(error.message);
-        }
-      }
-
-      // 4. ADMIN: TRIGGER CRON TIMEOUT RELEASE (POST /api/v1/cron/release)
-      async function triggerCronRelease() {
-        log(`[Cron] 手动调度后台超时清理 Worker ...`);
-
-        try {
-          const url = `${BACKEND_URL}/api/v1/cron/release`;
-          const response = await fetch(url, { method: "POST" });
-
-          if (!response.ok) {
-            throw new Error(`Cron 触发失败 Status: ${response.status}`);
-          }
-
-          const data = await response.json();
-          const released = data.released_count;
-
-          if (released > 0) {
-            log(
-              `[Cron-Cleanup] 清理成功！物理发还了 ${released} 个超时未付的过期座位段。`,
-              "var(--color-emerald)",
-            );
-            log(
-              `[Cron-Sync] 倒带 Redis 内存占用，同时向 Outbox 插入了释放事件以确保最终一致性！`,
-              "var(--color-rail-blue)",
+          // QUERY AVAILABILITY (GET /api/v1/query)
+          const queryAvailability = async () => {
+            pushLog(
+              `[Query] 向后端发起余票查询 (Route: ${fromStation.value} -> ${toStation.value})...`,
             );
 
-            // If we expired, reset current workflow
-            if (secondsLeft <= 0 && currentReservationId) {
-              resetWorkflow();
+            try {
+              const url = `${BACKEND_URL}/api/v1/query?schedule_id=${SCHEDULE_ID}&from_station_seq=${fromStation.value}&to_station_seq=${toStation.value}&seat_class=${SEAT_CLASS}`;
+              const response = await fetch(url);
+              if (!response.ok)
+                throw new Error(`HTTP Error Status: ${response.status}`);
+
+              const data = await response.json();
+              availableSeats.value = data.available_seats;
+              hasQueried.value = true;
+
+              // Mock self-healing display indicator for cold projections on first query
+              if (
+                queryMissCount.value === 0 ||
+                (fromStation.value === 1 &&
+                  toStation.value === 3 &&
+                  queryMissCount.value === 1)
+              ) {
+                isCacheMiss.value = true;
+                pushLog(
+                  `[CQRS-Heal] 读缓存未命中 (Cache Miss)，写侧投影器已异步触发冷源重算并重新建立 Redis 哈希视图！`,
+                  "var(--color-amber)",
+                );
+                queryMissCount.value++;
+              } else {
+                isCacheMiss.value = false;
+                pushLog(
+                  `[CQRS-Hit] 读缓存秒命中 (Redis Hit)，当前可用商务票数: ${availableSeats.value} 张`,
+                  "var(--color-emerald)",
+                );
+              }
+
+              if (availableSeats.value <= 0) {
+                pushLog(
+                  `[SOLD_OUT] 很抱歉，当前区间可分配席位已被买断售罄！`,
+                  "var(--color-rose)",
+                );
+              }
+            } catch (error) {
+              pushLog(
+                `[Error] 余票查询失败: ${error.message}. 请确保 Uvicorn 后端在 http://localhost:8000 运行并已拉起 Docker。`,
+                "var(--color-rose)",
+              );
+              alert("API 网络连通性失败，请查看日志控制台");
+            }
+          };
+
+          // RESERVE TICKET (POST /api/v1/reserve)
+          const reserveTicket = async () => {
+            const reqId =
+              "REQ_WEB_" +
+              Math.random().toString(36).substr(2, 9).toUpperCase();
+            pushLog(
+              `[Reserve] 正在向分配中心预留座位，Request ID: ${reqId}...`,
+            );
+
+            try {
+              const url = `${BACKEND_URL}/api/v1/reserve`;
+              const response = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  request_id: reqId,
+                  schedule_id: SCHEDULE_ID,
+                  from_station_seq: fromStation.value,
+                  to_station_seq: toStation.value,
+                  seat_class: SEAT_CLASS,
+                }),
+              });
+
+              if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(
+                  errorData.detail || `HTTP Error ${response.status}`,
+                );
+              }
+
+              const data = await response.json();
+              reservationId.value = data.reservation_id;
+
+              pushLog(
+                `[Success] 预占锁座成功！Reservation ID: ${reservationId.value}`,
+                "var(--color-emerald)",
+              );
+              pushLog(
+                `[Lock] MySQL 区间行锁、Redis 位掩码已原子加锁，预留状态为: HELD`,
+                "var(--color-amber)",
+              );
+
+              // Initialize holding countdown timer (60 seconds holding lock)
+              startCountdown();
+            } catch (error) {
+              pushLog(
+                `[Error] 占座锁定失败: ${error.message}`,
+                "var(--color-rose)",
+              );
+              alert(`抢票失败: ${error.message}`);
+            }
+          };
+
+          // Holding Countdown Handler
+          const startCountdown = () => {
+            if (countdownInterval) clearInterval(countdownInterval);
+            secondsLeft.value = 60;
+
+            countdownInterval = setInterval(() => {
+              secondsLeft.value--;
+              if (secondsLeft.value <= 0) {
+                clearInterval(countdownInterval);
+                pushLog(
+                  "[Timeout] 预占已超过 60s 支付限期，该订单在底层已被废弃。请点击下方管理按钮运行定时任务强制回收！",
+                  "var(--color-rose)",
+                );
+              }
+            }, 1000);
+          };
+
+          // CREATE ORDER & PAY ORDER (POST /api/v1/order -> POST /api/v1/pay)
+          const payOrder = async () => {
+            if (secondsLeft.value <= 0) {
+              alert("订单已超时失效，请重新预占！");
+              return;
             }
 
-            // Automatically re-query to show updated count!
-            await queryAvailability();
-          } else {
-            log(`[Cron-Skip] 无任何超期未支付席位，跳过回收逻辑。`);
-          }
-        } catch (error) {
-          log(
-            `[Error] Cron 清理执行异常: ${error.message}`,
-            "var(--color-rose)",
-          );
-        }
-      }
+            const reqId =
+              "REQ_PAY_" +
+              Math.random().toString(36).substr(2, 9).toUpperCase();
+            pushLog(
+              `[Pay] 正在为预约单 ${reservationId.value} 创建正式待付订单...`,
+            );
 
-      // Reset payment side panel
-      function resetWorkflow() {
-        currentReservationId = null;
-        currentOrderId = null;
-        if (countdownTimer) clearInterval(countdownTimer);
+            try {
+              // Step A: Create Order StateWAITTING_PAYMENT
+              const orderUrl = `${BACKEND_URL}/api/v1/order`;
+              const orderResponse = await fetch(orderUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  request_id: reqId,
+                  reservation_id: reservationId.value,
+                  amount: 250.0,
+                }),
+              });
 
-        document.getElementById("success-card").classList.add("hidden");
-        document.getElementById("holding-card").classList.add("hidden");
-        document.getElementById("bill-placeholder").classList.remove("hidden");
+              if (!orderResponse.ok) {
+                const errorData = await orderResponse.json();
+                throw new Error(`创建订单失败: ${errorData.detail}`);
+              }
 
-        log("重置前端购票面板，旅客可以进行下一次区间抢购。");
-      }
+              const orderData = await orderResponse.json();
+              orderId.value = orderData.order_id;
+              pushLog(
+                `[Order] 订单生成成功，ID: ${orderId.value}，进入状态: WAITING_PAYMENT`,
+              );
+
+              // Step B: Pay Order (Confirm and settle seat segments)
+              pushLog(`[Gateway] 正在调起银行扣款网关并核销订单...`);
+              const payUrl = `${BACKEND_URL}/api/v1/pay`;
+              const payResponse = await fetch(payUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ order_id: orderId.value }),
+              });
+
+              if (!payResponse.ok) {
+                const errorData = await payResponse.json();
+                throw new Error(`订单支付失败: ${errorData.detail}`);
+              }
+
+              const payResult = await payResponse.json();
+              if (payResult.success) {
+                if (countdownInterval) clearInterval(countdownInterval);
+                isPaid.value = true;
+                pushLog(
+                  `[Success] 支付成功！状态机转移为: CONFIRMED。席位永久段锁已被原子占领！`,
+                  "var(--color-emerald)",
+                );
+                pushLog(
+                  `[Outbox] 事务性发件箱已写入 "ORDER_PAID" 物理事件，准备通知高并发 Kafka 进行一致性投影。`,
+                  "var(--color-rail-blue)",
+                );
+              } else {
+                throw new Error("扣款网关返回核销失败");
+              }
+            } catch (error) {
+              pushLog(
+                `[Error] 支付失败: ${error.message}`,
+                "var(--color-rose)",
+              );
+              alert(error.message);
+            }
+          };
+
+          // ADMIN TRIGGER CRON TIMEOUT RELEASE (POST /api/v1/cron/release)
+          const triggerCronRelease = async () => {
+            pushLog(`[Cron] 手动调度后台超时清理 Worker ...`);
+
+            try {
+              const url = `${BACKEND_URL}/api/v1/cron/release`;
+              const response = await fetch(url, { method: "POST" });
+              if (!response.ok)
+                throw new Error(`Cron 触发失败 Status: ${response.status}`);
+
+              const data = await response.json();
+              const released = data.released_count;
+
+              if (released > 0) {
+                pushLog(
+                  `[Cron-Cleanup] 清理成功！物理发还了 ${released} 个超时未付的过期座位段。`,
+                  "var(--color-emerald)",
+                );
+                pushLog(
+                  `[Cron-Sync] 倒带 Redis 内存占用，同时向 Outbox 插入了释放事件以确保最终一致性！`,
+                  "var(--color-rail-blue)",
+                );
+
+                if (secondsLeft.value <= 0 && reservationId.value) {
+                  resetWorkflow();
+                }
+                await queryAvailability(); // Auto re-query to pull fresh state
+              } else {
+                pushLog(`[Cron-Skip] 无任何超期未支付席位，跳过回收逻辑。`);
+              }
+            } catch (error) {
+              pushLog(
+                `[Error] Cron 清理执行异常: ${error.message}`,
+                "var(--color-rose)",
+              );
+            }
+          };
+
+          // Reset workflows for next ticket purchase
+          const resetWorkflow = () => {
+            reservationId.value = null;
+            orderId.value = null;
+            isPaid.value = false;
+            if (countdownInterval) clearInterval(countdownInterval);
+            pushLog("重置前端购票面板，旅客可以进行下一次区间抢购。");
+          };
+
+          // Lifecycle Hooks
+          onMounted(() => {
+            pushLog("Vue 3 响应式微内核组件挂载完成，等待旅客查询操作...");
+          });
+
+          return {
+            stations,
+            fromStation,
+            toStation,
+            availableSeats,
+            isCacheMiss,
+            hasQueried,
+            reservationId,
+            orderId,
+            secondsLeft,
+            isPaid,
+            logs,
+            activeTrackStyle,
+            progressBarStyle,
+            isReserveDisabled,
+            selectStation,
+            queryAvailability,
+            reserveTicket,
+            payOrder,
+            triggerCronRelease,
+            resetWorkflow,
+          };
+        },
+      }).mount("#app");
     </script>
   </body>
 </html>
