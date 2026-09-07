@@ -27,6 +27,7 @@ usage() {
     echo "  health   Probe and output SRE-grade JSON report from the health endpoint"
     echo "  status   Verify if local Frontend (Port 8080) and Backend (Port 8000) are active"
     echo "  test     Execute full automated test suite (Unit, Integration, BDD, Stress)"
+    echo "  locust   Launch Locust distributed load testing dashboard on Port 8089"
     echo ""
 }
 
@@ -69,6 +70,12 @@ case "$1" in
         print_banner
         echo -e "${AMBER}[Ops] Executing complete testing pipeline...${NC}"
         ./venv/bin/python -m pytest -v
+        ;;
+    locust)
+        print_banner
+        echo -e "${AMBER}[Ops] Launching Locust load testing on Port 8089...${NC}"
+        echo -e "${GREEN}[INFO] Please open http://localhost:8089 in your browser to run the stress test.${NC}"
+        ./venv/bin/locust -f src/tests/locustfile.py --host http://localhost:8000
         ;;
     *)
         usage
