@@ -97,3 +97,32 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
     Then 12306 should atomically commit the train, Stations, and 3 BUSINESS seats with Segment Locks
     And the high-concurrency query cache on Redis for G999 should automatically pre-heat
     And the subsequent passenger query for route sequence 1 to 2 should instantly return 3 available seats
+
+  # ------------------------------------------------------------
+  # REAL-NAME PASSENGER TICKETING & COLLISION GUARD (EPIC-09)
+  # ------------------------------------------------------------
+
+  # 对应 US-9.1：同乘车人同车次占位重合时空碰撞拦截
+  Scenario: Prevent same passenger from duplicate bookings on the same train schedule (Collision Guard)
+    Given a clean ticketing system with train "G666" and Stations "北京", "天津", "上海"
+    And a seat with class "BUSINESS" is fully available
+    And passenger "PSG_CO_01" has already reserved a ticket from sequence 1 to 3
+    When passenger "PSG_CO_01" attempts to reserve another ticket on the same train schedule from sequence 1 to 2
+    Then the second booking request should be rejected as "Passenger has conflicting booking"
+
+  # 对应 US-9.2：学生证乘车人自动折抵 75% 优惠结算
+  Scenario: Automatically apply student discount for registered student passengers
+    Given the dynamic base tariff rate for "BUSINESS" is set to 1.2 yuan per km
+    And passenger "PSG_ST_01" is registered as a "STUDENT" passenger
+    When passenger "PSG_ST_01" requests to reserve a ticket from sequence 1 to 2
+    And a passenger creates an order for route sequence 1 to 2 (120 km) for passenger "PSG_ST_01"
+    Then the order payment amount should reflect the student discount tariff of 108.00 yuan
+
+  # 对应 US-9.3：候补队列实名穿透与自动安全兑现
+  Scenario: Waitlist real-name collision guarding and late-binding auto-fulfillment
+    Given a passenger has successfully reserved a ticket from sequence 1 to 2
+    And no seats are available for route sequence 1 to 2
+    And passenger "PSG_WL_01" attempts to join the waitlist for route sequence 1 to 2
+    When the first reservation expires and is released back to the pool
+    Then the waitlist queue should trigger real-name collision check
+    And passenger "PSG_WL_01" should be atomically fulfilled and granted a seat reservation
