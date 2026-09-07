@@ -6,7 +6,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
 
 from src.app.database import async_session, engine
-from src.app.models import Base, Train, Station, TrainSchedule, Seat, SeatSegment
+from src.app.models import Base, Train, Station, TrainSchedule, Seat, SeatSegment, Passenger
 from src.app.redis_client import get_redis
 from src.app.projector import Projector
 
@@ -32,6 +32,12 @@ async def seed_system():
     # Step 3: Populate database with standard mock schedules
     async with async_session() as session:
         async with session.begin():
+            print("[Ops] 正在预置实名制常用乘车人档案 (张三, 李四, 王学生)...")
+            p1 = Passenger(id="PSG_001", name="张三", id_no="110101199001019999", passenger_type="ADULT")
+            p2 = Passenger(id="PSG_002", name="李四", id_no="110101199001018888", passenger_type="ADULT")
+            p3 = Passenger(id="PSG_003", name="王学生", id_no="110101200501017777", passenger_type="STUDENT")
+            session.add_all([p1, p2, p3])
+
             print("[Ops] 正在写入基线列车主数据 Train [G888]...")
             train = Train(code="G888")
             session.add(train)
