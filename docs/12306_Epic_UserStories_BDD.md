@@ -421,3 +421,107 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
 - **`./ops.sh health`**：调用后台探针返回最精确的系统可用性 JSON 指标报告。
 - **`./ops.sh status`**：一键并行感知后端（Port 8000）与 Vue 3 前端（Port 8080）的运行状态。
 - **`./ops.sh test`**：拉起完整全量测试流水线，一键核销 100% 绿灯指标。
+
+---
+
+## 5. TRS 局端与 12306 接口数据交换标准规范 (TRS-12306 Data Exchange Standard)
+
+在真实的中国铁路客票系统设计中，**TRS（Train Reservation System，铁路局端客专运输调度/客票核心系统）** 与 **12306（互联网客票系统网关）** 物理分离。12306 售卖的所有车票方案均由 TRS 权威发布，双方严格遵循铁路行业标准进行高保真、事务性的数据集成交换。
+
+### 5.1 数据交互通道与安全拓扑
+
+- **异步保序通道 (主通道)**：通过 **IBM MQ (WebSphere MQ)** 企业级金融消息队列。TRS 调度发布每日运行计划时，将带有保序时序序号（Sequence Number）的 XML 格式报文推送至 12306 的接收队列，由 12306 顺序单事务消费。
+- **同步核对网关 (备/调账通道)**：由铁路局局域安全内网暴露的 **HTTPS JSON-RPC / RESTful 网关**，支持 12306 定时执行车次计划差异比对（Reconciliation Loop）并触发自愈预热。
+
+### 5.2 局端发布 (DAILY_TRAIN_RELEASE) 标准 JSON Schema 契约
+
+在 TRS 接口交换中，一趟列车的发布必须携带车次主数据、精准经停站时序和公里数、物理车底席位编组及对应的票池控制标记：
+
+```json
+{
+  "header": {
+    "msg_id": "TRS-PUB-20261001-G999-001",
+    "msg_type": "DAILY_TRAIN_RELEASE",
+    "source_bureau": "V",
+    "timestamp": "2026-09-06T08:00:00.000Z",
+    "version": "6.0"
+  },
+  "body": {
+    "train_plan": {
+      "train_code": "G999",
+      "route_type": "G_HIGH_SPEED",
+      "service_date": "2026-12-25",
+      "schedule_id": 99,
+      "base_tariff_class": "CR400AF_Z"
+    },
+    "stations": [
+      {
+        "sequence": 1,
+        "station_code": "BJP",
+        "station_name": "北京",
+        "arrival_time": null,
+        "departure_time": "08:00:00",
+        "mileage_km": 0
+      },
+      {
+        "sequence": 2,
+        "station_code": "TJP",
+        "station_name": "天津",
+        "arrival_time": "08:30:00",
+        "departure_time": "08:35:00",
+        "mileage_km": 120
+      },
+      {
+        "sequence": 3,
+        "station_code": "JNP",
+        "station_name": "济南",
+        "arrival_time": "09:45:00",
+        "departure_time": "09:50:00",
+        "mileage_km": 420
+      },
+      {
+        "sequence": 4,
+        "station_code": "SHH",
+        "station_name": "上海",
+        "arrival_time": "12:30:00",
+        "departure_time": null,
+        "mileage_km": 1318
+      }
+    ],
+    "carriage_seats": [
+      {
+        "carriage": "01",
+        "seat_class": "BUSINESS",
+        "seats": ["03A", "03C", "03D"]
+      }
+    ]
+  }
+}
+```
+
+### 5.3 核心名词及行业代码映射定义
+
+#### ① 铁路局拼音单字符代码 (Source Bureau Enum)
+
+报文头 `source_bureau` 指示发布此车次的各路局归属，严格遵循铁路行标规约：
+
+- **`V`**：中国铁路北京局集团有限公司（BJP）── BJP/BJP
+- **`F`**：中国铁路上海局集团有限公司（SHH）── SHH/SHH
+- **`Q`**：中国铁路广州局集团有限公司（GZP）── GZP/GZP
+- **`B`**：中国铁路哈尔滨局集团有限公司（HAR）── HRB/HAR
+
+#### ② 车站电报码 (Station Telegraph Code)
+
+`station_code` 必须携带三位拼音电报码（如北京为 `BJP`、上海为 `SHH`、天津为 `TJP`），用于车票主索引生成以及国际联运客专对账。
+
+#### ③ 车底基准型号 (Base Tariff Class)
+
+`base_tariff_class`（如 `CR400AF_Z`）指明物理车底是复兴号智能动车组 CR400AF，它决定了席位在 2D 平面图谱上的行列排布（如 2+1 的 A、C、D、F 商务座排布）和基准计费里程乘以乘数的运价标准。
+
+### 5.4 12306 侧接收数据后的“自愈写入与缓存投影预热”事务
+
+当 12306 网关端点（`POST /api/v1/ops/trs/import-schedule`）在物理上捕获到局端 TRS 报文时，系统按如下严格次序响应：
+
+1. **Pydantic 强契约检验**：拦截无效的车次和非标车厢，保障网关健壮性。
+2. **SQL 事务原子落库**：在一个物理 Async Transaction 内，顺序原子写入 `train`、`station` 经停站、`train_schedule` 主计划，并依次生成 `seat` 记录和推演生成所有子区间段锁行记录（`seat_segment`）。
+3. **Redis CQRS 读模型自愈重算 (Cache Pre-heating)**：提交事务前，自动在 12306 的内存读侧 Redis Hash 中按照站数 `(N-1)` 重算各区间位掩码，旅客检索瞬间刷新，完成“即导即售”的完美闭环。
