@@ -3,7 +3,7 @@ import datetime
 import uuid
 import asyncio
 from sqlalchemy import select
-from src.app.models import Train, Station, TrainSchedule, Seat, SeatSegment, Reservation
+from src.app.models import Train, Station, TrainSchedule, Seat, SeatSegment, Reservation, Passenger, Ticket
 from src.app.reservation_service import ReservationService
 from src.app.redis_client import get_redis
 
@@ -11,10 +11,10 @@ def test_high_concurrency_ticket_clash(db_session, event_loop):
     """
     Simulate extreme ticketing clash on G999 (4 stations: Seq 1 -> 2 -> 3 -> 4).
     We seed 1 BUSINESS seat (3 segments: Seg 1, Seg 2, Seg 3).
-    We spawn 50 concurrent requests simultaneously:
-      - 20 requests: leg 1->2 (Beijing -> Tianjin)
-      - 20 requests: leg 2->4 (Tianjin -> Shanghai)
-      - 10 requests: leg 1->4 (Beijing -> Shanghai)
+    We spawn 50 concurrent requests simultaneously, each using a distinct registered passenger:
+      - 20 requests: leg 1->2 (Beijing -> Tianjin) for passengers PSG_CLASH_A_0 to 19
+      - 20 requests: leg 2->4 (Tianjin -> Shanghai) for passengers PSG_CLASH_B_0 to 19
+      - 10 requests: leg 1->4 (Beijing -> Shanghai) for passengers PSG_CLASH_C_0 to 9
     """
     async def _impl():
         # 1. Seed Train & 4 Stations
@@ -44,13 +44,22 @@ def test_high_concurrency_ticket_clash(db_session, event_loop):
         seg2 = SeatSegment(schedule_id=schedule_id, seat_id=seat_id, segment_no=2, state="AVAILABLE", version=0)
         seg3 = SeatSegment(schedule_id=schedule_id, seat_id=seat_id, segment_no=3, state="AVAILABLE", version=0)
         db_session.add_all([seg1, seg2, seg3])
+
+        # Seed 50 distinct registered passengers to support extreme parallel real-name ticketing
+        passengers = []
+        for i in range(20):
+            passengers.append(Passenger(id=f"PSG_CLASH_A_{i}", name=f"ClashA_{i}", id_no=f"11010119900101{i:04d}", passenger_type="ADULT"))
+            passengers.append(Passenger(id=f"PSG_CLASH_B_{i}", name=f"ClashB_{i}", id_no=f"11010119900102{i:04d}", passenger_type="ADULT"))
+        for i in range(10):
+            passengers.append(Passenger(id=f"PSG_CLASH_C_{i}", name=f"ClashC_{i}", id_no=f"11010119900103{i:04d}", passenger_type="ADULT"))
+        db_session.add_all(passengers)
         await db_session.commit()
 
         # Define tasks
         tasks = []
 
         # Helper function to invoke reservation in a separate db session context
-        async def try_reserve(req_id, f_seq, t_seq):
+        async def try_reserve(req_id, f_seq, t_seq, p_ids):
             from src.app.database import async_session
             async with async_session() as session:
                 try:
@@ -60,7 +69,8 @@ def test_high_concurrency_ticket_clash(db_session, event_loop):
                         schedule_id=schedule_id,
                         from_seq=f_seq,
                         to_seq=t_seq,
-                        seat_class="BUSINESS"
+                        seat_class="BUSINESS",
+                        passenger_ids=p_ids
                     )
                     await session.commit()
                     return {"success": True, "res_id": res_id, "error": None}
@@ -70,15 +80,15 @@ def test_high_concurrency_ticket_clash(db_session, event_loop):
 
         # Leg 1->2 (Beijing -> Tianjin, Seq 1 -> 2) : 20 tasks
         for i in range(20):
-            tasks.append(try_reserve(f"REQ_CLASH_A_{i}", 1, 2))
+            tasks.append(try_reserve(f"REQ_CLASH_A_{i}", 1, 2, [f"PSG_CLASH_A_{i}"]))
 
         # Leg 2->4 (Tianjin -> Shanghai, Seq 2 -> 4) : 20 tasks
         for i in range(20):
-            tasks.append(try_reserve(f"REQ_CLASH_B_{i}", 2, 4))
+            tasks.append(try_reserve(f"REQ_CLASH_B_{i}", 2, 4, [f"PSG_CLASH_B_{i}"]))
 
         # Leg 1->4 (Beijing -> Shanghai, Seq 1 -> 4) : 10 tasks
         for i in range(10):
-            tasks.append(try_reserve(f"REQ_CLASH_C_{i}", 1, 4))
+            tasks.append(try_reserve(f"REQ_CLASH_C_{i}", 1, 4, [f"PSG_CLASH_C_{i}"]))
 
         # Execute all 50 requests in parallel
         results = await asyncio.gather(*tasks)
@@ -119,6 +129,10 @@ def test_high_concurrency_ticket_clash(db_session, event_loop):
         print(f"Leg 1->2 (Beijing -> Tianjin) Successful bookings: {num_1_2} {success_1_2}")
         print(f"Leg 2->4 (Tianjin -> Shanghai) Successful bookings: {num_2_4} {success_2_4}")
         print(f"Leg 1->4 (Beijing -> Shanghai) Successful bookings: {num_1_4} {success_1_4}")
+
+        # Strong validation: Assert that we actually succeeded in booking tickets!
+        total_bookings = num_1_2 + num_2_4 + num_1_4
+        assert total_bookings > 0, "No tickets were booked at all! Concurrency clash failed to process reservations."
 
         # Case A: If G999 whole path (1->4) won
         if num_1_4 == 1:
