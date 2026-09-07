@@ -6,7 +6,7 @@
 
 ## 1. 敏捷架构大纲 (Agile Hierarchy)
 
-本项目核心交易与查询生命周期被划分为 **5 大史诗特性（Epics）**：
+本项目核心交易与查询生命周期被划分为 **9 大史诗特性（Epics）**：
 
 ```text
   [ EPIC-01: 读写分离冷热查询 ]
@@ -44,6 +44,11 @@
      ├── US-8.1: TRS 局端计划发布接口 (TRS Authority Sync Interface)
      ├── US-8.2: 12306 数据库物理席位原子写入与区间锁初始化 (SQL Atomicity)
      └── US-8.3: 导入后自动 Redis 内存预热重算 (Auto Cache Pre-heating)
+
+  [ EPIC-09: 实名购票与时空防重碰撞 ]
+     ├── US-9.1: 同乘车人同车次时空重合占位拦截 (Spatiotemporal Collision Guard)
+     ├── US-9.2: 学生票属性自动折扣 75% 核销结算 (Student Discount Ticket Settle)
+     └── US-9.3: 候补实名排队与原子多级校验兑现 (Waitlist Real-Name Late-Binding)
 ```
 
 ---
@@ -277,7 +282,38 @@
 - **验收标准 (AC-3)**：
   - **Given (前提)**：TRS 写入事务即将提报。
   - **When (触发动作)**：同步服务在事务提交前自动调度 `Projector.recalculate_and_project` 针对该车次进行投影计算。
-  - **Then (预期结果)**：数据库提交的同时，Redis 内代表 G999 列车各区间（1-2、2-3、3-4、1-4）的哈希掩码和余票统计被秒级生成（显示 `available_seats: 3`），读模型自愈热身成功，旅客查询实现毫秒级“即导即售”。
+  - **Then (预期结果)**：数据库提交的同时，Redis 内代表 G999 列车各区间（1-2、2-3、3-4、1-4）的哈希掩码 and 余票统计被秒级生成（显示 `available_seats: 3`），读模型自愈热身成功，旅客查询实现毫秒级“即导即售”。
+
+---
+
+### 🌌 EPIC-09: 实名购票与时空防重碰撞 (Real-Name Ticketing & Collision Guard)
+
+**业务价值 (Value Proposition)**：
+随着客流量激增与互联网购票门槛的降低，黄牛代抢、囤票、多终端同时并发占座以及候补订单重复占席，严重危害了真实旅客的切身利益与系统的运载物理效能。通过引入乘客身份档案、票据实体关联、强有力的一车一时空碰撞防重防线（Collision Guard）以及候补队列实名穿透，能够 100% 杜绝多终端并发刷票等恶意竞争行为，保障购票公平。
+
+#### 👤 US-9.1: 同乘车人同车次时空重合占位拦截
+
+- **用户故事**：作为一名**实名乘车旅客**，我希望**系统能够阻止我在同一个车次（即使是非重叠的分段区间）同时拥有多张进行中的车票或占座单**，以便系统能释放囤积席位给其他急需出行的旅客，防止一人多占。
+- **验收标准 (AC-1)**：
+  - **Given (前提)**：旅客“张三（PSG_001）”已经订购了 G666 次列车“北京 -> 上海”（1->3 站）的 BUSINESS 商务座车票，且订单状态为 HELD 或 CONFIRMED。
+  - **When (触发动作)**：在同一日期同一趟 G666 车次下，再次尝试为“张三（PSG_001）”抢购“北京 -> 天津”（1->2 站）车票。
+  - **Then (预期结果)**：购票管线立刻通过 Collision Guard 抛出业务拦截异常，报错提示 `Passenger PSG_001 already has a conflicting booking on this schedule.`，预占请求终止，拒绝生成新的 Reservation 记录。
+
+#### 👤 US-9.2: 学生票属性自动折扣 75% 核销结算
+
+- **用户故事**：作为一名**持有有效学生证的乘车旅客**，我希望在**提交实名购票占位成功后，系统在生成付款账单时能自动对票价执行 75% 的学生折扣折抵**，以便我享受到国家法定票价补贴优惠。
+- **验收标准 (AC-2)**：
+  - **Given (前提)**：基准商务座里程费率为每公里 1.2 元。旅客“小李（PSG_ST_01）”的身份属性为 `STUDENT`。
+  - **When (触发动作)**：为“小李”提交并成功锁定了 1->2 站（共 120 km）的商务座席位，并创建支付 Order。
+  - **Then (预期结果)**：订单金额计算器自动匹配乘车人属性。由于包含学生折扣，计费引擎在基准价格 144 元的基础上，自动以 `base_rate * distance * 0.75` 执行物理打折，最终生成的 Order 订单应收实付金额为 108.00 元。
+
+#### 👤 US-9.3: 候补实名排队与原子多级校验兑现
+
+- **用户故事**：作为一名**排队候补的实名乘车旅客**，我希望在**所候补车次的席位发生超时未支付释放或退票时，排在候补第一位的我在兑现的一瞬间依然会被强力校验实名碰撞**，以便防止我在排队期间已经在同一趟列车买了别的车段，导致兑现后发生“一人同车多票”的重复占位脏数据。
+- **验收标准 (AC-3)**：
+  - **Given (前提)**：G888 次列车商务座已售罄。旅客“李四（PSG_002）”提交了候补请求并进入 `QUEUED` 状态。在此之后，小张通过别的路径退票或购买到了同一车次其他席位的 HELD 订单。
+  - **When (触发动作)**：原长途订单到期，后台 `release_expired_reservations` 守护 Cron 线程启动，将物理席位释放回票池，并自动原子触发 waitlist `auto_fulfill_waitlist` 候补兑现。
+  - **Then (预期结果)**：兑现引擎在执行 `reserve_ticket` 抢票扣减逻辑前，对排在首位的候补单乘车人再次穿透实名拦截（Late-binding Guard）。系统检测到“李四（PSG_002）”此时在同一车次已有 conflicting 占位，立刻自动熔断将该候补单标记为 `CANCELLED_CONFLICT` 并释放，让位给第二位真实需要退票兑现的候补旅客。
 
 ---
 
@@ -377,6 +413,35 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
     Then 12306 should atomically commit the train, Stations, and 3 BUSINESS seats with Segment Locks
     And the high-concurrency query cache on Redis for G999 should automatically pre-heat
     And the subsequent passenger query for route sequence 1 to 2 should instantly return 3 available seats
+
+  # ------------------------------------------------------------
+  # REAL-NAME PASSENGER TICKETING & COLLISION GUARD (EPIC-09)
+  # ------------------------------------------------------------
+
+  # 对应 US-9.1：同乘车人同车次占位重合时空碰撞拦截
+  Scenario: Prevent same passenger from duplicate bookings on the same train schedule (Collision Guard)
+    Given a clean ticketing system with train "G666" and Stations "北京", "天津", "上海"
+    And a seat with class "BUSINESS" is fully available
+    And passenger "PSG_CO_01" has already reserved a ticket from sequence 1 to 3
+    When passenger "PSG_CO_01" attempts to reserve another ticket on the same train schedule from sequence 1 to 2
+    Then the second booking request should be rejected as "Passenger has conflicting booking"
+
+  # 对应 US-9.2：学生证乘车人自动折抵 75% 优惠结算
+  Scenario: Automatically apply student discount for registered student passengers
+    Given the dynamic base tariff rate for "BUSINESS" is set to 1.2 yuan per km
+    And passenger "PSG_ST_01" is registered as a "STUDENT" passenger
+    When passenger "PSG_ST_01" requests to reserve a ticket from sequence 1 to 2
+    And a passenger creates an order for route sequence 1 to 2 (120 km) for passenger "PSG_ST_01"
+    Then the order payment amount should reflect the student discount tariff of 108.00 yuan
+
+  # 对应 US-9.3：候补队列实名穿透与自动安全兑现
+  Scenario: Waitlist real-name collision guarding and late-binding auto-fulfillment
+    Given a passenger has successfully reserved a ticket from sequence 1 to 2
+    And no seats are available for route sequence 1 to 2
+    And passenger "PSG_WL_01" attempts to join the waitlist for route sequence 1 to 2
+    When the first reservation expires and is released back to the pool
+    Then the waitlist queue should trigger real-name collision check
+    And passenger "PSG_WL_01" should be atomically fulfilled and granted a seat reservation
 ```
 
 ````
