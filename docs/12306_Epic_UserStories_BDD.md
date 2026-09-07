@@ -34,6 +34,11 @@
      ├── US-6.1: 多人邻座自动分配与席位偏好 (Adjacent Allocation & Preference)
      ├── US-6.2: 同车中途断配智能换座推荐 (Split-Seat Smart Recomposition)
      └── US-6.3: 车厢席位平面图与点击选座 (Interactive Carriage 2D Seatmap)
+
+  [ EPIC-07: 票额分配控制与动态票池管理 ]
+     ├── US-7.1: 分段阶梯限售与长途优先保障池隔离 (Long-Distance Quota Isolation)
+     ├── US-7.2: 临售时限未售配额动态解锁与共享 (Dynamic Quota Sharing & Auto-Release)
+     └── US-7.3: 弹性安全库存缓冲与候补溢出超配 (Elastic Safety Buffer & Standby Queue)
 ```
 
 ---
@@ -211,6 +216,36 @@
 
 ---
 
+### 🌌 EPIC-07: 票额分配控制与动态票池管理 (Ticket Pool & Quotas)
+
+**业务价值 (Value Proposition)**：精细化调配长短途客流，最大化单车公里总收益。通过长途物理保障池在初期的硬隔离，杜绝短途旅客“切碎”长途票源；并在邻近开车时通过自动定时策略解锁回拢配额，注入共享票池，实现空座率为零的完美周转。
+
+#### 👤 US-7.1: 分段阶梯限售与长途优先保障池隔离
+
+- **用户故事**：作为一名**铁路局票额分配总监**，我希望能够**将列车指定车次的一定比例席位划入“长途专售票池”中（初始仅允许北京->上海全线购买，禁止中途站区间预订）**，以便最大化客单价和铁路里程收益。
+- **验收标准 (AC-1)**：
+  - **Given (前提)**：01车厢 01A、01C 被划入“长途专售票池”。
+  - **When (触发动作)**：普通公众购买人试图买北京->天津段（段 1）的 01A、01C。
+  - **Then (预期结果)**：预占引擎检测到这些席位正处于长途限售保障期内（未到解锁阈值），立即返回 `Quota Restricted` 错误拒绝。只有当旅客买北京->上海（段 1-3 全线）时，才允许锁座，完美保全高价值全线票流。
+
+#### 👤 US-7.2: 临售时限未售配额动态解锁与共享复用
+
+- **用户故事**：作为一名**平时买不到车票的短途出行旅客**，我希望在**开车前 24 小时（或模拟时限阈值内），系统能自动将长途池中未售出的剩余座位合并至“共享票池”**，以便我能捡漏抢到这些放开限制的短途车票。
+- **验收标准 (AC-2)**：
+  - **Given (前提)**：开往上海的 G888 次列车还有 12 小时发车，长途专售池中 01A、01C 座位仍旧未售出。
+  - **When (触发动作)**：后台动态解锁定时器（Quota Releaser）或管理员触发配额回拢。
+  - **Then (预期结果)**：系统运行 `ops/release_quotas` 自动解锁事务，将 01A、01C 移出隔离专售池，并将其二进制锁掩码对公众放开。此时短途旅客查询北京-天津（段 1）或天津-济南（段 2），原先显示为 0 的余票数瞬间变为 2，实现配额的自愈共享，提高车辆载客率。
+
+#### 👤 US-7.3: 弹性安全库存缓冲与候补溢出超配
+
+- **用户故事**：作为一名**购票高峰期候补旅客**，我希望在**普通共享票池显示售罄时，系统能够允许我提交“候补占位（Standby Queue）”订单并锁定高优先级退票**，以便我在车票倒带释放的第一时间自动排队补位，无需肉眼刷票。
+- **验收标准 (AC-3)**：
+  - **Given (前提)**：列车普通票池余票显示为 0。系统配置了 2 张座位的“弹性超配/候补安全缓冲区”。
+  - **When (触发动作)**：旅客点击提交候补订单。
+  - **Then (预期结果)**：预占事务并不返回 Sold Out，而是提示“候补成功，处于排队第 1 位”，状态显示为 `WAITING_FOR_STANDBY`。一旦系统有人未支付超时释放车票（US-3.1 触发），或有人在线退票，后台保序发布器（Outbox）事件自动触发投影重算，该空余座位按 FIFO 原则秒级自动划拨给候补排队旅客，核销生成 CONFIRMED 实体车票。
+
+---
+
 ## 3. BDD Gherkin 契约对齐文件
 
 上述 User Stories 与底层业务规则已被 100% 集成、固化至项目根目录的 BDD 特征文件 **`src/tests/features/ticketing.feature`** 中。
@@ -282,6 +317,23 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
     Then the smart recomposition engine should propose a split-seat itinerary "Seat 01A (Seg 1-2) + Seat 02C (Seg 2-4)"
     When the passenger confirms the split-seat itinerary
     Then the system should atomic-reserve segment 1-2 on Seat 01A and segment 2-4 on Seat 02C in a single transaction
+
+  # 对应 US-7.1：长途专售隔离，限制短途购票
+  Scenario: Long-distance safeguard pool restricts short-distance booking to preserve full-journey ticket assets
+    Given a clean ticketing system with train "G666" and Stations "北京", "天津", "上海"
+    And Seat "01A" is allocated in the long-distance safeguard pool (Sequence 1 to 3 exclusive)
+    When a passenger attempts to reserve Seat "01A" for short-distance from sequence 1 to 2
+    Then the reservation engine should reject the booking as "Quota restricted"
+    When another passenger attempts to reserve Seat "01A" for full-journey from sequence 1 to 3
+    Then the reservation should succeed with a valid reservation ID
+
+  # 对应 US-7.2：临离发车配额自动释放共享
+  Scenario: Unsold long-distance quotas are auto-released near departure time, enabling short-distance bookings
+    Given Seat "01A" was locked in the long-distance safeguard pool for full-journey sequence 1 to 3
+    And the time to departure is within 24 hours threshold
+    When the automatic quota releaser triggers allocation merger
+    Then the long-distance isolation lock on Seat "01A" should be dynamic-released
+    And the short-distance queries for sequence 1 to 2 should now return 1 available seat
 ```
 
 ---
