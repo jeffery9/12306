@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List
 from src.app.database import async_session
 from src.app.redis_client import get_redis
 from src.app.reservation_service import ReservationService
@@ -11,7 +12,7 @@ app = FastAPI(title="12306 High-Concurrency Ticketing MVP", version="1.0.0")
 # Enable Cross-Origin Resource Sharing (CORS) for independent Frontend Web Apps
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to allowed origins (e.g. localhost:8080)
+    allow_origins=["*"],  # In production, restrict to allowed origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -21,8 +22,6 @@ app.add_middleware(
 async def get_db():
     async with async_session() as session:
         yield session
-
-from typing import List
 
 # 2. Pydantic Schemas for JSON Request Bodies
 class StationImportModel(BaseModel):
@@ -48,6 +47,20 @@ class ReserveRequest(BaseModel):
     from_station_seq: int
     to_station_seq: int
     seat_class: str
+    passenger_count: int = 1
+
+class SplitReserveRequest(BaseModel):
+    request_id: str
+    schedule_id: int
+    seat1_id: int
+    from1: int
+    to1: int
+    seat2_id: int
+    from2: int
+    to2: int
+
+class QuotaReleaseRequest(BaseModel):
+    schedule_id: int
 
 class OrderRequest(BaseModel):
     request_id: str
@@ -82,6 +95,24 @@ async def query_availability(
     count = int(val) if val is not None else 0
     return {"available_seats": count}
 
+@app.get("/api/v1/query/recompose")
+async def query_recompose_itinerary(
+    schedule_id: int,
+    from_station_seq: int,
+    to_station_seq: int,
+    seat_class: str,
+    db=Depends(get_db)
+):
+    """GET endpoint to fetch smart split-seat recomposition recommendations when direct tickets are sold out."""
+    result = await ReservationService.find_split_itinerary(
+        db_session=db,
+        schedule_id=schedule_id,
+        from_seq=from_station_seq,
+        to_seq=to_station_seq,
+        seat_class=seat_class
+    )
+    return result
+
 @app.post("/api/v1/reserve")
 async def reserve_ticket(req: ReserveRequest, db=Depends(get_db)):
     try:
@@ -91,7 +122,29 @@ async def reserve_ticket(req: ReserveRequest, db=Depends(get_db)):
             schedule_id=req.schedule_id,
             from_seq=req.from_station_seq,
             to_seq=req.to_station_seq,
-            seat_class=req.seat_class
+            seat_class=req.seat_class,
+            passenger_count=req.passenger_count
+        )
+        await db.commit()
+        return {"reservation_id": reservation_id}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/v1/reserve/split")
+async def reserve_split_ticket(req: SplitReserveRequest, db=Depends(get_db)):
+    """POST endpoint to confirm and atomically reserve a recommended split-seat itinerary."""
+    try:
+        reservation_id = await ReservationService.reserve_split_ticket(
+            db_session=db,
+            request_id=req.request_id,
+            schedule_id=req.schedule_id,
+            seat1_id=req.seat1_id,
+            from1=req.from1,
+            to1=req.to1,
+            seat2_id=req.seat2_id,
+            from2=req.from2,
+            to2=req.to2
         )
         await db.commit()
         return {"reservation_id": reservation_id}
@@ -174,11 +227,21 @@ async def trs_import_schedule(req: TRSImportScheduleRequest, db=Depends(get_db))
     """Authoritative API endpoint for TRS (Railway Core System) to publish/sync train schedules to 12306."""
     from src.app.trs_sync_service import TRSSyncService
     try:
-        # Convert Pydantic request model to dictionary for the integration service
         payload = req.model_dump()
         result = await TRSSyncService.import_schedule(db_session=db, payload=payload)
         await db.commit()
         return result
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/v1/ops/quota/release")
+async def trs_quota_release(req: QuotaReleaseRequest, db=Depends(get_db)):
+    """Authoritative operational API to trigger long-distance safeguard pool dynamic release."""
+    try:
+        count = await ReservationService.release_expired_quotas(db_session=db, schedule_id=req.schedule_id)
+        await db.commit()
+        return {"status": "SUCCESS", "released_count": count}
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))

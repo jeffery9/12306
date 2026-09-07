@@ -2,7 +2,7 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Build Status](https://img.shields.io/badge/tests-12%20%2F%2012%20Passed-brightgreen.svg)](#-5-自动化测试与高并发撞击压测)
+[![Build Status](https://img.shields.io/badge/tests-19%20%2F%2019%20Passed-brightgreen.svg)](#-5-自动化测试与高并发撞击压测)
 
 > **解构中国铁路级难题**：12306 作为全球并发写峰值最高、售票区间逻辑最复杂的票务系统之一，民间存在诸多关于“海量锁冲突、库存超卖、长途腿抢占短途腿、数据库瞬间瘫痪”的传说与技术猜想。
 >

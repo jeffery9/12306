@@ -1,6 +1,7 @@
 import datetime
 import uuid
 import logging
+from collections import defaultdict
 from sqlalchemy import select
 from src.app.models import Reservation, Orders, SeatSegment, OutboxEvent
 from src.app.redis_client import get_redis, release_seat_lua
@@ -8,8 +9,15 @@ from src.app.redis_client import get_redis, release_seat_lua
 logger = logging.getLogger(__name__)
 
 class OrderService:
-    @staticmethod
+    base_rate = 1.2  # Base dynamic tariff rate in yuan per km
+
+    @classmethod
+    def set_base_rate(cls, rate: float):
+        cls.base_rate = rate
+
+    @classmethod
     async def create_order(
+        cls,
         db_session,
         request_id: str,
         reservation_id: str,
@@ -25,6 +33,11 @@ class OrderService:
             raise Exception(f"Reservation is in invalid state: {res.state}")
         if res.expires_at < datetime.datetime.now():
             raise Exception("Reservation has already expired")
+
+        # Dynamic Pricing calculation if amount is passed as 0
+        if amount == 0:
+            distance = (res.to_segment - res.from_segment) * 120
+            amount = round(cls.base_rate * distance, 2)
 
         # 2. Create Order
         order_id = f"ORD_{uuid.uuid4().hex[:16].upper()}"
@@ -84,13 +97,11 @@ class OrderService:
             raise Exception("Reservation was already released or invalidated")
         res.state = "CONFIRMED"
 
-        # 4. Fetch and Lock seat segments in deterministic ASC order to prevent deadlocks
+        # 4. Fetch and Lock ALL seat segments for this reservation ID (handles group bookings cleanly)
         seg_stmt = select(SeatSegment).where(
             SeatSegment.schedule_id == res.schedule_id,
-            SeatSegment.seat_id == res.seat_id,
-            SeatSegment.segment_no >= res.from_segment,
-            SeatSegment.segment_no < res.to_segment
-        ).with_for_update().order_by(SeatSegment.segment_no.asc())
+            SeatSegment.reservation_id == res.id
+        ).with_for_update().order_by(SeatSegment.seat_id.asc(), SeatSegment.segment_no.asc())
         
         segments = (await db_session.execute(seg_stmt)).scalars().all()
         for seg in segments:
@@ -107,7 +118,6 @@ class OrderService:
                 "order_id": order_id,
                 "reservation_id": res.id,
                 "schedule_id": res.schedule_id,
-                "seat_id": res.seat_id,
                 "from_segment": res.from_segment,
                 "to_segment": res.to_segment
             },
@@ -141,13 +151,11 @@ class OrderService:
             if not locked_res or locked_res.state != "HELD":
                 continue
 
-            # 3. Lock corresponding SeatSegments in deterministic ASC order to prevent deadlocks
+            # 3. Lock all associated SeatSegments for this reservation ID ASC
             seg_stmt = select(SeatSegment).where(
                 SeatSegment.schedule_id == locked_res.schedule_id,
-                SeatSegment.seat_id == locked_res.seat_id,
-                SeatSegment.segment_no >= locked_res.from_segment,
-                SeatSegment.segment_no < locked_res.to_segment
-            ).with_for_update().order_by(SeatSegment.segment_no.asc())
+                SeatSegment.reservation_id == locked_res.id
+            ).with_for_update().order_by(SeatSegment.seat_id.asc(), SeatSegment.segment_no.asc())
             
             segments = (await db_session.execute(seg_stmt)).scalars().all()
 
@@ -168,22 +176,22 @@ class OrderService:
             if associated_order:
                 associated_order.state = "EXPIRED"
 
-            # 6. Reclaim/Release occupied bitmap segments in Redis cache via Lua
-            # Compute bitmask
-            mask = 0
-            for seg_idx in range(locked_res.from_segment, locked_res.to_segment):
-                mask |= (1 << (seg_idx - 1))
+            # 6. Group released segments by seat_id and release Redis masks via Lua
+            seat_masks = defaultdict(int)
+            for seg in segments:
+                seat_masks[seg.seat_id] |= (1 << (seg.segment_no - 1))
 
-            seat_key = f"r:{locked_res.schedule_id}:seat:{locked_res.seat_id}"
-            res_key = f"r:{locked_res.schedule_id}:reservation:{locked_res.id}"
+            for s_id, mask in seat_masks.items():
+                seat_key = f"r:{locked_res.schedule_id}:seat:{s_id}"
+                res_key = f"r:{locked_res.schedule_id}:reservation:{locked_res.id}"
 
-            await release_seat_lua(
-                redis_conn=redis_client,
-                seat_key=seat_key,
-                res_key=res_key,
-                mask=mask,
-                res_id=locked_res.id
-            )
+                await release_seat_lua(
+                    redis_conn=redis_client,
+                    seat_key=seat_key,
+                    res_key=res_key,
+                    mask=mask,
+                    res_id=locked_res.id
+                )
 
             # 7. Add Outbox released event
             outbox_event = OutboxEvent(
@@ -194,10 +202,9 @@ class OrderService:
                 payload={
                     "reservation_id": locked_res.id,
                     "schedule_id": locked_res.schedule_id,
-                    "seat_id": locked_res.seat_id,
                     "from_segment": locked_res.from_segment,
                     "to_segment": locked_res.to_segment,
-                    "mask": mask
+                    "seat_masks": dict(seat_masks)
                 },
                 status="NEW"
             )

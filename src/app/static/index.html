@@ -3,809 +3,318 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>12306 Next-Gen Ticketing Dashboard (Vue 3)</title>
-    <!-- Import Vue 3 Global Build from high-speed reliable CDN -->
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <style>
-      /* Modern futuristic dark slate theme with glowing accents */
-      :root {
-        --bg-start: #0b0f19;
-        --bg-end: #1a152e;
-        --card-bg: rgba(22, 28, 45, 0.65);
-        --card-border: rgba(255, 255, 255, 0.08);
-        --text-primary: #f8fafc;
-        --text-secondary: #94a3b8;
-        --color-rail-blue: #38bdf8;
-        --color-rail-blue-glow: rgba(56, 189, 248, 0.4);
-        --color-emerald: #10b981;
-        --color-emerald-glow: rgba(16, 185, 129, 0.4);
-        --color-rose: #f43f5e;
-        --color-rose-glow: rgba(244, 63, 94, 0.4);
-        --color-amber: #f59e0b;
-        --color-amber-glow: rgba(245, 158, 11, 0.4);
-      }
-
-      * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-        font-family:
-          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
-          Arial, sans-serif;
-      }
-
-      body {
-        background: linear-gradient(
-          135deg,
-          var(--bg-start) 0%,
-          var(--bg-end) 100%
-        );
-        color: var(--text-primary);
-        min-height: 100vh;
-        padding: 2.5rem 1.5rem;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-      }
-
-      .container {
-        width: 100%;
-        max-width: 1000px;
-        display: flex;
-        flex-direction: column;
-        gap: 2rem;
-      }
-
-      /* Header Style */
-      header {
-        text-align: center;
-        margin-bottom: 0.5rem;
-      }
-
-      header h1 {
-        font-size: 2.2rem;
-        font-weight: 800;
-        letter-spacing: -0.025em;
-        background: linear-gradient(to right, #38bdf8, #818cf8);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0.5rem;
-        filter: drop-shadow(0 2px 8px rgba(56, 189, 248, 0.3));
-      }
-
-      header p {
-        color: var(--text-secondary);
-        font-size: 1rem;
-        max-width: 600px;
-        margin: 0 auto;
-      }
-
-      .train-badge {
-        display: inline-block;
-        background: rgba(56, 189, 248, 0.15);
-        border: 1px solid rgba(56, 189, 248, 0.3);
-        color: var(--color-rail-blue);
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.85rem;
-        font-weight: 600;
-        margin-top: 0.75rem;
-        box-shadow: 0 0 10px rgba(56, 189, 248, 0.1);
-      }
-
-      /* Glassmorphism Card Style */
-      .card {
-        background: var(--card-bg);
-        border: 1px solid var(--card-border);
-        border-radius: 16px;
-        padding: 1.75rem;
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-      }
-
-      .card:hover {
-        border-color: rgba(56, 189, 248, 0.2);
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
-      }
-
-      .card-title {
-        font-size: 1.15rem;
-        font-weight: 700;
-        color: var(--text-primary);
-        margin-bottom: 1.25rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        padding-bottom: 0.75rem;
-      }
-
-      /* Train Track Visualizer */
-      .track-container {
-        position: relative;
-        padding: 2.5rem 1rem 1.5rem 1rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        background: rgba(0, 0, 0, 0.2);
-        border-radius: 12px;
-        margin-bottom: 1.5rem;
-        overflow: hidden;
-      }
-
-      .track-line-bg {
-        position: absolute;
-        left: 10%;
-        right: 10%;
-        top: 48%;
-        height: 4px;
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 2px;
-        z-index: 1;
-      }
-
-      .track-line-active {
-        position: absolute;
-        left: 10%;
-        top: 48%;
-        height: 4px;
-        background: linear-gradient(90deg, var(--color-rail-blue), #818cf8);
-        box-shadow: 0 0 12px var(--color-rail-blue);
-        border-radius: 2px;
-        z-index: 2;
-        transition: all 0.4s ease;
-      }
-
-      .station-node {
-        position: relative;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        z-index: 3;
-        cursor: pointer;
-      }
-
-      .station-dot {
-        width: 14px;
-        height: 14px;
-        background: #475569;
-        border: 2px solid #1e293b;
-        border-radius: 50%;
-        transition: all 0.3s ease;
-      }
-
-      .station-node.active .station-dot {
-        background: var(--color-rail-blue);
-        border-color: #0b0f19;
-        box-shadow: 0 0 10px var(--color-rail-blue);
-        transform: scale(1.2);
-      }
-
-      .station-name {
-        font-size: 0.9rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-        margin-top: 0.75rem;
-        transition: color 0.3s ease;
-      }
-
-      .station-node.active .station-name {
-        color: var(--text-primary);
-      }
-
-      /* Inputs Group */
-      .inputs-row {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 1.25rem;
-        margin-bottom: 1rem;
-      }
-
-      .input-group {
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-      }
-
-      .input-group label {
-        font-size: 0.8rem;
-        font-weight: 600;
-        color: var(--text-secondary);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-
-      select,
-      button {
-        background: #1e293b;
-        border: 1px solid var(--card-border);
-        color: var(--text-primary);
-        padding: 0.75rem 1rem;
-        border-radius: 8px;
-        font-size: 0.95rem;
-        outline: none;
-        transition: all 0.2s ease;
-      }
-
-      select:focus {
-        border-color: var(--color-rail-blue);
-        box-shadow: 0 0 8px var(--color-rail-blue-glow);
-      }
-
-      button {
-        cursor: pointer;
-        font-weight: 600;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.5rem;
-      }
-
-      .btn-primary {
-        background: linear-gradient(135deg, #0284c7 0%, #4f46e5 100%);
-        border: none;
-        box-shadow: 0 4px 15px rgba(79, 70, 229, 0.2);
-      }
-
-      .btn-primary:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 20px rgba(79, 70, 229, 0.3);
-      }
-
-      .btn-primary:active {
-        transform: translateY(0);
-      }
-
-      .btn-disabled {
-        background: #334155 !important;
-        color: #64748b !important;
-        cursor: not-allowed;
-        transform: none !important;
-        box-shadow: none !important;
-      }
-
-      .btn-success {
-        background: linear-gradient(135deg, #059669 0%, #10b981 100%);
-        border: none;
-        box-shadow: 0 4px 15px rgba(16, 185, 129, 0.2);
-      }
-
-      .btn-success:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 20px rgba(16, 185, 129, 0.3);
-      }
-
-      /* Split Panels Layout */
-      .panels-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-        gap: 1.5rem;
-      }
-
-      /* Ticket Availability Visual */
-      .ticket-status-box {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 1.25rem;
-        background: rgba(0, 0, 0, 0.15);
-        border-radius: 10px;
-        border-left: 4px solid #64748b;
-        margin-top: 0.5rem;
-        transition: all 0.3s ease;
-      }
-
-      .status-available {
-        border-left-color: var(--color-emerald) !important;
-        background: rgba(16, 185, 129, 0.05);
-      }
-
-      .status-soldout {
-        border-left-color: var(--color-rose) !important;
-        background: rgba(244, 63, 94, 0.05);
-      }
-
-      .ticket-info {
-        display: flex;
-        flex-direction: column;
-        gap: 0.25rem;
-      }
-
-      .seat-class {
-        font-size: 1.05rem;
-        font-weight: 700;
-      }
-
-      .cache-badge {
-        display: inline-block;
-        font-size: 0.75rem;
-        padding: 0.15rem 0.5rem;
-        border-radius: 4px;
-        font-weight: 500;
-        text-transform: uppercase;
-      }
-
-      .badge-miss {
-        background: rgba(245, 158, 11, 0.15);
-        color: var(--color-amber);
-        border: 1px solid rgba(245, 158, 11, 0.3);
-      }
-
-      .badge-hit {
-        background: rgba(16, 185, 129, 0.15);
-        color: var(--color-emerald);
-        border: 1px solid rgba(16, 185, 129, 0.3);
-      }
-
-      .ticket-count {
-        text-align: right;
-      }
-
-      .count-number {
-        font-size: 2.2rem;
-        font-weight: 900;
-        line-height: 1;
-      }
-
-      .count-unit {
-        font-size: 0.8rem;
-        color: var(--text-secondary);
-      }
-
-      /* Holding Reservation Box */
-      .reservation-details {
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
-        background: rgba(245, 158, 11, 0.03);
-        border: 1px dashed rgba(245, 158, 11, 0.2);
-        border-radius: 10px;
-        padding: 1.25rem;
-        margin-top: 0.5rem;
-      }
-
-      .res-row {
-        display: flex;
-        justify-content: space-between;
-        font-size: 0.9rem;
-      }
-
-      .res-label {
-        color: var(--text-secondary);
-      }
-
-      .res-value {
-        font-weight: 600;
-        color: var(--text-primary);
-      }
-
-      .res-value.glow-amber {
-        color: var(--color-amber);
-        text-shadow: 0 0 8px var(--color-amber-glow);
-      }
-
-      /* Countdown Progress Bar */
-      .progress-container {
-        width: 100%;
-        height: 6px;
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 3px;
-        overflow: hidden;
-        position: relative;
-      }
-
-      .progress-bar {
-        height: 100%;
-        background: linear-gradient(
-          90deg,
-          var(--color-amber),
-          var(--color-rose)
-        );
-        width: 100%;
-        transition: width 1s linear;
-      }
-
-      /* Payment Finished Box */
-      .success-box {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 0.75rem;
-        background: rgba(16, 185, 129, 0.06);
-        border: 1px solid rgba(16, 185, 129, 0.2);
-        border-radius: 10px;
-        padding: 1.5rem;
-        text-align: center;
-        margin-top: 0.5rem;
-        animation: fadeIn 0.4s ease;
-      }
-
-      .success-icon {
-        width: 42px;
-        height: 42px;
-        border-radius: 50%;
-        background: var(--color-emerald);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #0b0f19;
-        font-size: 1.5rem;
-        font-weight: bold;
-        box-shadow: 0 0 15px var(--color-emerald-glow);
-      }
-
-      .success-title {
-        font-size: 1.1rem;
-        font-weight: 700;
-        color: var(--color-emerald);
-      }
-
-      .ticket-ticket {
-        background: #1e293b;
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 8px;
-        padding: 0.75rem 1.25rem;
-        width: 100%;
-        display: flex;
-        justify-content: space-between;
-        font-size: 0.85rem;
-        font-family: monospace;
-      }
-
-      /* Console/Logging Card */
-      .console-logs {
-        background: #090d16;
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 10px;
-        padding: 1rem;
-        font-family: monospace;
-        font-size: 0.85rem;
-        color: var(--color-rail-blue);
-        height: 140px;
-        overflow-y: auto;
-        display: flex;
-        flex-direction: column;
-        gap: 0.4rem;
-      }
-
-      .log-entry {
-        display: flex;
-        gap: 0.5rem;
-      }
-
-      .log-time {
-        color: var(--text-secondary);
-      }
-
-      .log-text {
-        word-break: break-all;
-      }
-
-      /* Admin/Cron Section */
-      .admin-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 1.5rem;
-        flex-wrap: wrap;
-      }
-
-      .admin-desc {
-        font-size: 0.85rem;
-        color: var(--text-secondary);
-        flex: 1;
-      }
-
-      .btn-outline {
-        background: transparent;
-        border: 1px solid #475569;
-        color: var(--text-secondary);
-      }
-
-      .btn-outline:hover {
-        border-color: var(--color-rail-blue);
-        color: var(--text-primary);
-        box-shadow: 0 0 8px var(--color-rail-blue-glow);
-      }
-
-      /* Utilities */
-      .hidden {
-        display: none !important;
-      }
-
-      @keyframes fadeIn {
-        from {
-          opacity: 0;
-          transform: translateY(4px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
+    <title>12306 Next-Gen Ticketing Dashboard (Vue 3 + Tailwind + ESM)</title>
+    <!-- Import Tailwind CSS Play CDN for cutting-edge utility-first styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Custom Tailwind Configuration to match our glowing neon theme -->
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              'slate-theme-dark': '#0b0f19',
+              'slate-theme-light': '#1a152e',
+              'rail-blue': '#38bdf8',
+              'rail-blue-glow': 'rgba(56, 189, 248, 0.4)',
+              'neon-emerald': '#10b981',
+              'neon-emerald-glow': 'rgba(16, 185, 129, 0.4)',
+              'neon-rose': '#f43f5e',
+              'neon-rose-glow': 'rgba(244, 63, 94, 0.4)',
+              'neon-amber': '#f59e0b',
+              'neon-amber-glow': 'rgba(245, 158, 11, 0.4)',
+            }
+          }
         }
       }
-
-      @media (max-width: 600px) {
-        body {
-          padding: 1.5rem 1rem;
-        }
-        .panels-grid {
-          grid-template-columns: 1fr;
-        }
-      }
-    </style>
+    </script>
+    <!-- Link physically split Stylesheet for custom station node animations and overrides -->
+    <link rel="stylesheet" href="/static/style.css" />
   </head>
-  <body>
-    <div id="app" class="container">
+  <body class="bg-gradient-to-br from-slate-theme-dark via-slate-900 to-slate-theme-light min-h-screen text-slate-100 p-6 sm:p-10 flex flex-col items-center">
+    
+    <!-- Main Vue App Container -->
+    <div id="app" class="w-full max-w-[1000px] flex flex-col gap-8">
+      
       <!-- Header -->
-      <header>
-        <h1>12306 Next-Gen Ticketing Dashboard</h1>
-        <p>
-          基于 CQRS
-          读写分离、内存位掩码预占与事务发件箱架构的高并发区间票务分配系统 MVP
-          (Vue 3 响应式驱动)
+      <header class="text-center mb-2">
+        <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight bg-gradient-to-r from-sky-400 to-indigo-400 bg-clip-text text-transparent drop-shadow-md mb-2">
+          12306 Next-Gen Ticketing Dashboard
+        </h1>
+        <p class="text-slate-400 text-sm sm:text-base max-w-[620px] mx-auto leading-relaxed">
+          基于 CQRS 读写分离、内存段位图预占与事务发件箱架构的高并发区间票务分配系统 MVP
+          (Vue 3 + ESM 原生组件化编排)
         </p>
-        <span class="train-badge">复兴号 G888 次 ── 商务特等座舱</span>
+        <span class="inline-block bg-sky-500/10 border border-sky-500/30 text-rail-blue px-3 py-1 rounded-full text-xs font-semibold mt-3 shadow-[0_0_12px_rgba(56,189,248,0.1)]">
+          复兴号 G888 次 ── 商务特等座舱
+        </span>
       </header>
 
-      <!-- 1. Route Selector Card -->
-      <div class="card">
-        <div class="card-title">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2.5"
-          >
-            <path
-              d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"
-            />
-            <line x1="4" y1="22" x2="4" y2="15" />
+      <!-- 1. Route Selector Component (V-Model Bound) -->
+      <route-selector
+        :stations="stations"
+        v-model:from-station="fromStation"
+        v-model:to-station="toStation"
+        :active-track-style="activeTrackStyle"
+        @select-station="selectStation"
+        @query-availability="queryAvailability"
+      ></route-selector>
+
+      <!-- Split Panels Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- 2. Ticket Booking Component -->
+        <ticket-booking
+          :available-seats="availableSeats"
+          v-model:passenger-count="passengerCount"
+          :is-cache-miss="isCacheMiss"
+          :is-querying-split="isQueryingSplit"
+          :split-itinerary="splitItinerary"
+          :is-reserve-disabled="isReserveDisabled"
+          @query-split="querySplitItinerary"
+          @reserve-ticket="reserveTicket"
+          @reserve-split="reserveSplitTicket"
+        ></ticket-booking>
+
+        <!-- 3. Order Payment Component -->
+        <order-payment
+          :reservation-id="reservationId"
+          :locked-passenger-count="lockedPassengerCount"
+          :seconds-left="secondsLeft"
+          :progress-bar-style="progressBarStyle"
+          :computed-total-amount="computedTotalAmount"
+          :is-paid="isPaid"
+          :split-itinerary="splitItinerary"
+          :is-split-reservation="isSplitReservation"
+          :from-station="fromStation"
+          :to-station="toStation"
+          @pay-order="payOrder"
+          @reset="resetWorkflow"
+        ></order-payment>
+      </div>
+
+      <!-- 4. System Execution Logs Component -->
+      <system-logs :logs="logs"></system-logs>
+
+      <!-- 5. DevOps & Admin Console Component -->
+      <devops-console
+        @cron-release="triggerCronRelease"
+        @quota-release="releaseLongDistanceQuota"
+      ></devops-console>
+
+    </div>
+
+    <!-- ==================== VUE 3 COMPONENT TEMPLATES ==================== -->
+
+    <!-- Template A: Route Selector Component -->
+    <template id="route-selector-template">
+      <div class="bg-slate-900/65 border border-white/5 rounded-2xl p-6 sm:p-7 backdrop-blur-md shadow-2xl transition-all duration-300 hover:border-sky-500/20 hover:shadow-sky-500/5">
+        <div class="text-lg font-bold text-slate-100 mb-5 flex items-center gap-2 border-b border-white/5 pb-3">
+          <svg class="text-rail-blue" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/>
+            <line x1="4" y1="22" x2="4" y2="15"/>
           </svg>
           1. 选择乘坐区间 (Select Route)
         </div>
 
-        <!-- Interactive Reactive Rail Track Visualizer -->
-        <div class="track-container">
-          <div class="track-line-bg"></div>
-          <!-- Reactive track highlight line dynamically linked to Computed property -->
-          <div class="track-line-active" :style="activeTrackStyle"></div>
+        <div class="relative px-4 py-10 sm:py-12 flex justify-between items-center bg-black/25 rounded-xl mb-6 overflow-hidden">
+          <div class="absolute left-[10%] right-[10%] top-[48%] h-1 bg-slate-800 rounded-full z-10"></div>
+          <div class="absolute left-[10%] top-[48%] h-1 bg-gradient-to-r from-sky-400 to-indigo-500 shadow-[0_0_12px_#38bdf8] rounded-full z-20 transition-all duration-500" :style="activeTrackStyle"></div>
 
-          <!-- Generate Station Nodes with standard Vue declarative rendering -->
           <div
             v-for="station in stations"
             :key="station.seq"
-            class="station-node"
+            class="relative flex flex-col items-center z-30 cursor-pointer station-node"
             :class="{ active: station.seq >= fromStation && station.seq <= toStation }"
-            @click="selectStation(station.seq)"
+            @click="$emit('select-station', station.seq)"
           >
-            <div class="station-dot"></div>
-            <div class="station-name">
+            <div class="w-3.5 h-3.5 bg-slate-600 border-2 border-slate-900 rounded-full transition-all duration-300 station-dot"></div>
+            <div class="text-sm font-semibold text-slate-400 mt-3 transition-colors duration-300 station-name">
               {{ station.name }} ({{ station.seq }})
             </div>
           </div>
         </div>
 
-        <div class="inputs-row">
-          <div class="input-group">
-            <label for="from-station">出发站 (From)</label>
-            <select id="from-station" v-model.number="fromStation">
-              <option
-                v-for="s in stations.slice(0, 3)"
-                :key="s.seq"
-                :value="s.seq"
-              >
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-5">
+          <div class="flex flex-col gap-2">
+            <label class="text-xs font-bold text-slate-400 uppercase tracking-wider">出发站 (From)</label>
+            <select :value="fromStation" @input="$emit('update:fromStation', parseInt($event.target.value))" class="bg-slate-850 border border-white/5 text-slate-100 px-4 py-3 rounded-xl text-sm outline-none transition-all focus:border-rail-blue focus:ring-1 focus:ring-rail-blue">
+              <option v-for="s in stations.slice(0, 3)" :key="s.seq" :value="s.seq">
                 {{ s.name }} (Seq {{ s.seq }})
               </option>
             </select>
           </div>
-          <div class="input-group">
-            <label for="to-station">到达站 (To)</label>
-            <select id="to-station" v-model.number="toStation">
-              <option
-                v-for="s in stations.slice(1)"
-                :key="s.seq"
-                :value="s.seq"
-                :disabled="s.seq <= fromStation"
-              >
+          <div class="flex flex-col gap-2">
+            <label class="text-xs font-bold text-slate-400 uppercase tracking-wider">到达站 (To)</label>
+            <select :value="toStation" @input="$emit('update:toStation', parseInt($event.target.value))" class="bg-slate-850 border border-white/5 text-slate-100 px-4 py-3 rounded-xl text-sm outline-none transition-all focus:border-rail-blue focus:ring-1 focus:ring-rail-blue">
+              <option v-for="s in stations.slice(1)" :key="s.seq" :value="s.seq" :disabled="s.seq <= fromStation">
                 {{ s.name }} (Seq {{ s.seq }})
               </option>
             </select>
           </div>
-          <div class="input-group" style="justify-content: flex-end">
-            <button class="btn-primary" @click="queryAvailability">
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.5"
-              >
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          <div class="flex flex-col justify-end">
+            <button class="font-semibold flex items-center justify-center gap-2 bg-gradient-to-r from-sky-500 to-indigo-600 border-none text-slate-100 px-5 py-3 rounded-xl shadow-lg shadow-indigo-500/10 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-indigo-500/20 active:translate-y-0" @click="$emit('query-availability')">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
               </svg>
               实时余票查询
             </button>
           </div>
         </div>
       </div>
+    </template>
 
-      <!-- Multi-Panel Split Panels Layout -->
-      <div class="panels-grid">
-        <!-- Left Panel: Ticket Query & Pre-reservation -->
-        <div class="card">
-          <div class="card-title">
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-            >
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-              <line x1="16" y1="2" x2="16" y2="6" />
-              <line x1="8" y1="2" x2="8" y2="6" />
-              <line x1="3" y1="10" x2="21" y2="10" />
+    <!-- Template B: Ticket Booking Component -->
+    <template id="ticket-booking-template">
+      <div class="bg-slate-900/65 border border-white/5 rounded-2xl p-6 sm:p-7 backdrop-blur-md shadow-2xl transition-all duration-300 hover:border-sky-500/20 hover:shadow-sky-500/5 flex flex-col justify-between">
+        <div>
+          <div class="text-lg font-bold text-slate-100 mb-4 flex items-center gap-2 border-b border-white/5 pb-3">
+            <svg class="text-rail-blue" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="16" y1="2" x2="16" y2="6"/>
+              <line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
             </svg>
             2. 余票状态与抢票预占
           </div>
 
-          <p
-            style="
-              color: var(--text-secondary);
-              font-size: 0.85rem;
-              margin-bottom: 0.75rem;
-            "
-          >
-            查询和库存引擎隔离。本切片余票信息来自高并发 Redis 读视图。
+          <p class="text-slate-400 text-xs mb-5">
+            本切片余票信息来自高并发 Redis 读视图。支持相邻座自动推荐。
           </p>
 
-          <!-- Pre-query empty state -->
-          <div v-if="availableSeats === null" class="ticket-status-box">
-            <div
-              style="
-                color: var(--text-secondary);
-                text-align: center;
-                width: 100%;
-                font-size: 0.9rem;
-              "
-            >
+          <div class="flex flex-col gap-2 mb-5">
+            <label class="text-xs font-bold text-slate-400 uppercase tracking-wider">乘车旅客人数 (Group Size)</label>
+            <select :value="passengerCount" @input="$emit('update:passengerCount', parseInt($event.target.value))" class="bg-slate-850 border border-white/5 text-slate-100 px-4 py-3 rounded-xl text-sm outline-none transition-all focus:border-rail-blue focus:ring-1 focus:ring-rail-blue w-full">
+              <option :value="1">1 人出行 (单座原子检索)</option>
+              <option :value="2">2 人出行 (多人同厢邻座寻优)</option>
+            </select>
+          </div>
+
+          <div v-if="availableSeats === null" class="flex items-center justify-center p-6 bg-slate-950/40 rounded-xl border border-dashed border-slate-800">
+            <div class="text-slate-500 text-center text-sm">
               请在上方选择起止车站并点击【实时余票查询】
             </div>
           </div>
 
-          <!-- Reactive query result display -->
-          <div
-            v-else
-            class="ticket-status-box"
-            :class="availableSeats > 0 ? 'status-available' : 'status-soldout'"
-          >
-            <div class="ticket-info">
-              <span class="seat-class">BUSINESS (商务座舱)</span>
+          <div v-else class="flex items-center justify-between p-5 rounded-xl border transition-all duration-300" :class="availableSeats > 0 ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-rose-500/30 bg-rose-500/5'">
+            <div class="flex flex-col gap-1">
+              <span class="text-base font-bold text-slate-100">BUSINESS (商务座舱)</span>
               <div>
-                <span
-                  :class="['cache-badge', isCacheMiss ? 'badge-miss' : 'badge-hit']"
-                >
-                  {{ isCacheMiss ? 'Cache Miss - Self Healing' : 'Redis Cache
-                  Hit' }}
+                <span class="inline-block text-xs font-bold px-2 py-0.5 rounded" :class="isCacheMiss ? 'bg-amber-500/10 text-neon-amber animate-pulse' : 'bg-emerald-500/10 text-neon-emerald'">
+                  {{ isCacheMiss ? 'Cache Miss - Self Healing' : 'Redis Cache Hit' }}
                 </span>
               </div>
             </div>
-            <div class="ticket-count">
-              <span class="count-number">{{ availableSeats }}</span>
-              <span class="count-unit">张</span>
+            <div class="flex items-baseline gap-0.5">
+              <span class="text-3xl font-extrabold tracking-tight" :class="availableSeats > 0 ? 'text-neon-emerald' : 'text-neon-rose'">{{ availableSeats }}</span>
+              <span class="text-xs text-slate-400">张</span>
             </div>
           </div>
 
-          <button
-            class="btn-primary"
-            :class="{ 'btn-disabled': isReserveDisabled }"
-            style="width: 100%; margin-top: 1.5rem"
-            @click="reserveTicket"
-            :disabled="isReserveDisabled"
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
+          <!-- Smart Split-Seat Recomposition Card -->
+          <div v-if="availableSeats === 0" class="bg-amber-500/5 border border-dashed border-amber-500/30 rounded-xl p-5 mt-5 animate-[fadeIn_0.4s_ease]">
+            <div class="text-sm font-bold text-neon-amber flex items-center gap-1.5 mb-2">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+              </svg>
+              智能拼座接续推荐 (EPIC-06)
+            </div>
+            <div class="text-xs text-slate-400 leading-relaxed mb-4">
+              检测到该直达区间当前无直接席位。启动同车断配自愈引擎，可智能匹配中转拼接，无需旅客人工换乘！
+            </div>
+            
+            <button 
+              v-if="!splitItinerary" 
+              class="w-full text-xs font-semibold py-2.5 px-4 rounded-lg bg-transparent border border-slate-700 text-slate-400 hover:border-rail-blue hover:text-slate-100 hover:shadow-[0_0_8px_rgba(56,189,248,0.15)] transition-all duration-200" 
+              @click="$emit('query-split')"
+              :disabled="isQueryingSplit"
             >
-              <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-              <circle cx="8.5" cy="7" r="4" />
-              <line x1="20" y1="8" x2="20" y2="14" />
-              <line x1="23" y1="11" x2="17" y2="11" />
-            </svg>
-            立即抢票预占 (Reserve)
-          </button>
+              {{ isQueryingSplit ? '接续推演中...' : '搜寻中途拼座接续方案' }}
+            </button>
+
+            <div v-else-if="splitItinerary.split_found" class="mt-2">
+              <div class="bg-black/35 rounded-lg p-3 font-mono text-xs text-neon-amber mb-3 border border-amber-500/10">
+                接续中转点: Seq {{ splitItinerary.mid_seq }} | {{ splitItinerary.description }}
+              </div>
+              <button class="w-full text-xs font-semibold py-2.5 px-4 rounded-lg bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 border-none text-slate-100 shadow-md shadow-emerald-950/20 transition-all duration-200" @click="$emit('reserve-split')">
+                确认预占拼座接续车票
+              </button>
+            </div>
+            <div v-else class="text-xs text-neon-rose text-center font-semibold mt-2">
+              中转点检索耗尽，该区间目前无可用拼座方案。
+            </div>
+          </div>
         </div>
 
-        <!-- Right Panel: Billing & Transactions -->
-        <div class="card">
-          <div class="card-title">
-            <svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-            >
-              <rect x="2" y="4" width="20" height="16" rx="2" ry="2" />
-              <line x1="12" y1="4" x2="12" y2="20" />
+        <button
+          class="w-full font-semibold flex items-center justify-center gap-2 bg-gradient-to-r from-sky-500 to-indigo-600 border-none text-slate-100 px-5 py-3.5 rounded-xl shadow-lg shadow-indigo-500/10 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-indigo-500/20 active:translate-y-0 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none mt-6"
+          @click="$emit('reserve-ticket')"
+          :disabled="isReserveDisabled"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="8.5" cy="7" r="4"/>
+            <line x1="20" y1="8" x2="20" y2="14"/>
+            <line x1="23" y1="11" x2="17" y2="11"/>
+          </svg>
+          {{ passengerCount === 2 ? '立即预占相邻座位 (2张)' : '立即抢票预占 (Reserve)' }}
+        </button>
+      </div>
+    </template>
+
+    <!-- Template C: Order Payment Component -->
+    <template id="order-payment-template">
+      <div class="bg-slate-900/65 border border-white/5 rounded-2xl p-6 sm:p-7 backdrop-blur-md shadow-2xl transition-all duration-300 hover:border-sky-500/20 hover:shadow-sky-500/5 flex flex-col justify-between">
+        <div>
+          <div class="text-lg font-bold text-slate-100 mb-4 flex items-center gap-2 border-b border-white/5 pb-3">
+            <svg class="text-rail-blue" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <rect x="2" y="4" width="20" height="16" rx="2" ry="2"/>
+              <line x1="12" y1="4" x2="12" y2="20"/>
             </svg>
             3. 收费、订单与最终确认
           </div>
 
-          <!-- Case A: Holding State with active countdown and progress bar -->
-          <div v-if="reservationId && !isPaid">
-            <p
-              style="
-                color: var(--text-secondary);
-                font-size: 0.85rem;
-                margin-bottom: 0.75rem;
-              "
-            >
+          <!-- Case A: Holding State -->
+          <div v-if="reservationId && !isPaid" class="animate-[fadeIn_0.4s_ease]">
+            <p class="text-slate-400 text-xs mb-4 leading-relaxed">
               座位已被锁定。请在下方支付期限内进行确认，超时将自动释放：
             </p>
 
-            <div class="reservation-details">
-              <div class="res-row">
-                <span class="res-label">锁定预约 ID:</span>
-                <span class="res-value">{{ reservationId }}</span>
+            <div class="bg-black/25 rounded-xl p-4 flex flex-col gap-3">
+              <div class="flex justify-between text-xs">
+                <span class="text-slate-400">锁定预约 ID:</span>
+                <span class="font-bold font-mono text-rail-blue">{{ reservationId }}</span>
               </div>
-              <div class="res-row">
-                <span class="res-label">支付倒计时:</span>
-                <span
-                  class="res-value glow-amber"
-                  :style="{ color: secondsLeft <= 10 ? 'var(--color-rose)' : 'var(--color-amber)' }"
-                >
+              <div class="flex justify-between text-xs">
+                <span class="text-slate-400">出行人数:</span>
+                <span class="font-bold">{{ lockedPassengerCount }} 人</span>
+              </div>
+              <div class="flex justify-between text-xs">
+                <span class="text-slate-400">支付倒计时:</span>
+                <span class="font-bold font-mono text-neon-amber text-shadow-[0_0_8px_rgba(245,158,11,0.4)]">
                   {{ secondsLeft > 0 ? secondsLeft + ' 秒' : '已过期' }}
                 </span>
               </div>
-              <div class="progress-container">
-                <!-- Pipelined reactive progress bar linked to computed style -->
-                <div class="progress-bar" :style="progressBarStyle"></div>
+              <div class="w-full h-1.5 bg-white/5 rounded-full overflow-hidden mt-1">
+                <div class="h-full bg-gradient-to-r from-neon-amber to-neon-rose transition-all duration-1000" :style="progressBarStyle"></div>
               </div>
             </div>
 
-            <div class="inputs-row" style="margin-top: 1.25rem">
-              <div class="input-group">
-                <label>结算金额</label>
-                <div
-                  style="
-                    font-size: 1.2rem;
-                    font-weight: 800;
-                    color: var(--color-amber);
-                  "
-                >
-                  ¥ 250.00
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
+              <div class="flex flex-col gap-1.5">
+                <label class="text-xs font-bold text-slate-400 uppercase tracking-wider">实时结算金额 (动态计价)</label>
+                <div class="text-2xl font-black text-neon-amber">
+                  ¥ {{ computedTotalAmount.toFixed(2) }}
                 </div>
               </div>
-              <div class="input-group" style="justify-content: flex-end">
+              <div class="flex flex-col justify-end">
                 <button
-                  class="btn-success"
-                  @click="payOrder"
+                  class="w-full font-semibold flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 border-none text-slate-100 px-5 py-3 rounded-xl shadow-lg shadow-emerald-500/10 transition-all duration-200 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed disabled:transform-none"
+                  @click="$emit('pay-order')"
                   :disabled="secondsLeft <= 0"
-                  :class="{ 'btn-disabled': secondsLeft <= 0 }"
                 >
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.5"
-                  >
-                    <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
-                    <line x1="1" y1="10" x2="23" y2="10" />
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/>
+                    <line x1="1" y1="10" x2="23" y2="10"/>
                   </svg>
                   确认模拟支付
                 </button>
@@ -813,496 +322,115 @@
             </div>
           </div>
 
-          <!-- Case B: Success State displaying final confirmed ticket -->
-          <div v-else-if="isPaid" class="success-box">
-            <div class="success-icon">✓</div>
-            <div class="success-title">车票预定成功并已支付！</div>
-            <p style="color: var(--text-secondary); font-size: 0.85rem">
-              列车配席系统已成功下发物理车票
+          <!-- Case B: Success State -->
+          <div v-else-if="isPaid" class="flex flex-col items-center justify-center gap-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-6 text-center animate-[fadeIn_0.4s_ease]">
+            <div class="w-11 h-11 rounded-full bg-neon-emerald flex items-center justify-center text-slate-900 text-xl font-bold shadow-[0_0_15px_rgba(16,185,129,0.4)]">✓</div>
+            <div class="text-lg font-bold text-neon-emerald">车票预定成功并已支付！</div>
+            <p class="text-slate-400 text-xs">
+              列车配席系统已成功下发物理车票并写入 outbox 发件箱：
             </p>
-            <div class="ticket-ticket">
-              <span style="color: var(--color-rail-blue)">复兴号 G888 次</span>
-              <span style="color: var(--text-primary)"
-                >04车厢 04F号席 (商务)</span
-              >
-              <span style="color: var(--color-emerald)">¥ 250.00</span>
+            
+            <div class="bg-slate-850 border border-white/5 rounded-lg p-4 w-full flex flex-col gap-2.5 font-mono text-xs text-left">
+              <div class="flex justify-between">
+                <span class="text-rail-blue font-bold">复兴号 G888 次</span>
+                <span class="text-neon-emerald font-bold">¥ {{ computedTotalAmount.toFixed(2) }}</span>
+              </div>
+              <div class="flex justify-between border-t border-white/5 pt-2 text-slate-400">
+                <span>区间: Seq {{ fromStation }} ──► Seq {{ toStation }}</span>
+                <span>商务舱</span>
+              </div>
+              <div v-if="lockedPassengerCount === 2" class="flex justify-between text-rail-blue">
+                <span>席位 1: 01车厢 01A号席 (靠窗)</span>
+                <span>席位 2: 01车厢 01C号席 (过道)</span>
+              </div>
+              <div v-else-if="isSplitReservation" class="flex flex-col gap-1 text-neon-amber text-[11px] leading-normal">
+                <div>Leg 1: 01车厢 01A号席 (Seq {{ fromStation }}->{{ splitItinerary.mid_seq }})</div>
+                <div>Leg 2: 01车厢 02C号席 (Seq {{ splitItinerary.mid_seq }}->{{ toStation }})</div>
+              </div>
+              <div v-else class="flex justify-between text-rail-blue">
+                <span>分配席位: 01车厢 01A号 (商务极速占)</span>
+              </div>
             </div>
-            <button
-              class="btn-outline"
-              style="width: 100%; margin-top: 0.5rem"
-              @click="resetWorkflow"
-            >
+            
+            <button class="w-full font-semibold py-2.5 px-4 rounded-lg bg-transparent border border-slate-700 text-slate-400 hover:border-rail-blue hover:text-slate-100 transition-all duration-200" @click="$emit('reset')">
               返回继续预订
             </button>
           </div>
 
           <!-- Case C: Empty Placeholder -->
-          <div
-            v-else
-            style="
-              color: var(--text-secondary);
-              font-size: 0.9rem;
-              text-align: center;
-              padding: 3rem 0;
-            "
-          >
-            <svg
-              width="36"
-              height="36"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              style="margin-bottom: 0.75rem; stroke: #475569"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="8" x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
+          <div v-else class="flex flex-col items-center justify-center text-slate-500 py-14">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="mb-3 text-slate-700">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
-            <div>暂无待付订单</div>
+            <div class="text-sm">暂无待付订单</div>
           </div>
         </div>
       </div>
+    </template>
 
-      <!-- System Console Logs -->
-      <div class="card">
-        <div class="card-title">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2.5"
-          >
-            <polyline points="4 17 10 11 4 5" />
-            <line x1="12" y1="19" x2="20" y2="19" />
+    <!-- Template D: System Logs Component -->
+    <template id="system-logs-template">
+      <div class="bg-slate-900/65 border border-white/5 rounded-2xl p-6 sm:p-7 backdrop-blur-md shadow-2xl transition-all duration-300 hover:border-sky-500/20 hover:shadow-sky-500/5">
+        <div class="text-lg font-bold text-slate-100 mb-4 flex items-center gap-2 border-b border-white/5 pb-3">
+          <svg class="text-rail-blue" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="4 17 10 11 4 5"/>
+            <line x1="12" y1="19" x2="20" y2="19"/>
           </svg>
           4. 实时系统执行日志 (Agent Console Logs)
         </div>
-        <div id="console-logs" class="console-logs">
-          <div class="log-entry" v-for="(log, idx) in logs" :key="idx">
-            <span class="log-time">[{{ log.time }}]</span>
-            <span class="log-text" :style="{ color: log.color }"
-              >{{ log.text }}</span
-            >
+        <div id="console-logs" class="bg-slate-950 border border-white/5 rounded-xl p-4 font-mono text-xs text-rail-blue h-[170px] overflow-y-auto flex flex-col gap-1.5 leading-normal">
+          <div class="flex gap-2" v-for="(log, idx) in logs" :key="idx">
+            <span class="text-slate-500 shrink-0">[{{ log.time }}]</span>
+            <span class="break-all" :style="{ color: log.color }">{{ log.text }}</span>
           </div>
         </div>
       </div>
+    </template>
 
-      <!-- Admin/Cron Dashboard Card -->
-      <div class="card" style="border-color: rgba(245, 158, 11, 0.15)">
-        <div class="card-title" style="color: var(--color-amber)">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2.5"
-          >
-            <circle cx="12" cy="12" r="3" />
-            <path
-              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
-            />
+    <!-- Template E: DevOps Console Component -->
+    <template id="devops-console-template">
+      <div class="bg-slate-900/65 border border-amber-500/10 rounded-2xl p-6 sm:p-7 backdrop-blur-md shadow-2xl transition-all duration-300 hover:border-amber-500/25 hover:shadow-amber-500/5">
+        <div class="text-lg font-bold text-neon-amber mb-5 flex items-center gap-2 border-b border-white/5 pb-3">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
-          5. 高级故障恢复与定时任务 (Cron Dashboard)
+          5. DevOps 应急封锁与调度控制台 (DevOps Dashboard)
         </div>
-        <div class="admin-row">
-          <div class="admin-desc">
-            本面板支持手动触发后台“定时回收任务（Cron
-            Job）”。当系统中有【未支付超时】的占位订购单时，点击本按钮将原子性倒退
-            Redis 与 MySQL 中的位掩码状态，释放座位，让其余重置回库。
+        
+        <!-- Action 1: Timeout Release -->
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-white/5 pb-5 mb-5">
+          <div class="text-xs text-slate-400 leading-relaxed sm:max-w-[70%]">
+            <strong class="text-slate-200">未支付超时回收（Cron Job）：</strong>
+            当系统中有【未支付超时】的预占订购单时，手动触发此项，系统将自动回滚 Redis 与 MySQL 中的位掩码状态，发还座位给票池。
           </div>
-          <button class="btn-outline" @click="triggerCronRelease">
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-            >
-              <path
-                d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"
-              />
+          <button class="w-full sm:w-auto text-xs font-semibold py-2.5 px-4 rounded-lg bg-transparent border border-slate-700 text-slate-400 hover:border-rail-blue hover:text-slate-100 transition-all duration-200" @click="$emit('cron-release')">
+            <svg class="mr-1.5 inline" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
             </svg>
-            触发未支付超时释放
+            触发超时未付释放
+          </button>
+        </div>
+
+        <!-- Action 2: Quota Merger/Release -->
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div class="text-xs text-slate-400 leading-relaxed sm:max-w-[70%]">
+            <strong class="text-slate-200">长途限售专属配额释放（EPIC-07）：</strong>
+            当列车临近开车（如发车前 24 小时）时，手动解封全部长途专属配额（Seat 01A）。系统将原子解封并重算投影，使短途购票立即可售！
+          </div>
+          <button class="w-full sm:w-auto text-xs font-semibold py-2.5 px-4 rounded-lg bg-transparent border border-amber-500/40 text-neon-amber hover:bg-amber-500/5 hover:border-neon-amber hover:shadow-[0_0_10px_var(--color-amber-glow)] transition-all duration-200" @click="$emit('quota-release')">
+            <svg class="mr-1.5 inline" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            解封长途配额合并
           </button>
         </div>
       </div>
-    </div>
+    </template>
 
-    <script>
-      const { createApp, ref, computed, watch, onMounted } = Vue;
-
-      createApp({
-        setup() {
-          // Configuration Constants
-          const BACKEND_URL = "http://localhost:8000";
-          const SCHEDULE_ID = 1;
-          const SEAT_CLASS = "BUSINESS";
-
-          // Stations Static Data
-          const stations = [
-            { seq: 1, name: "北京" },
-            { seq: 2, name: "天津" },
-            { seq: 3, name: "济南" },
-            { seq: 4, name: "上海" },
-          ];
-
-          // Reactive State Variables
-          const fromStation = ref(1);
-          const toStation = ref(4);
-          const availableSeats = ref(null);
-          const isCacheMiss = ref(false);
-          const hasQueried = ref(false);
-          const queryMissCount = ref(0);
-
-          const reservationId = ref(null);
-          const orderId = ref(null);
-          const secondsLeft = ref(60);
-          const isPaid = ref(false);
-          const logs = ref([]);
-
-          let countdownInterval = null;
-
-          // Log Console Writer Helper
-          const pushLog = (text, color = null) => {
-            const timeStr = new Date().toTimeString().split(" ")[0];
-            logs.value.push({ time: timeStr, text, color });
-
-            // Auto scroll logger on next DOM tick
-            Vue.nextTick(() => {
-              const consoleLogs = document.getElementById("console-logs");
-              if (consoleLogs) {
-                consoleLogs.scrollTop = consoleLogs.scrollHeight;
-              }
-            });
-          };
-
-          // COMPUTED: Train Track Highlight Style
-          const activeTrackStyle = computed(() => {
-            const leftPercent = (fromStation.value - 1) * 33.33;
-            const widthPercent = (toStation.value - fromStation.value) * 33.33;
-            return {
-              left: `calc(10% + ${leftPercent * 0.8}%)`,
-              width: `${widthPercent * 0.8}%`,
-            };
-          });
-
-          // COMPUTED: Live Countdown Progress Bar style
-          const progressBarStyle = computed(() => {
-            if (secondsLeft.value <= 0) return { width: "0%" };
-            return {
-              width: `${(secondsLeft.value / 60) * 100}%`,
-              transition: "width 1s linear",
-            };
-          });
-
-          // COMPUTED: Is Reservation Button Disabled
-          const isReserveDisabled = computed(() => {
-            return (
-              availableSeats.value === null ||
-              availableSeats.value <= 0 ||
-              isPaid.value
-            );
-          });
-
-          // WATCHER: Reset query state when station selection changes
-          watch([fromStation, toStation], ([newFrom, newTo]) => {
-            // Keep "To Station" greater than "From Station"
-            if (newTo <= newFrom) {
-              toStation.value = newFrom + 1;
-              return;
-            }
-            availableSeats.value = null; // Reset results to force fresh query
-            pushLog(`路由区间更新为: Seq ${newFrom} ──► Seq ${newTo}`);
-          });
-
-          // Actions: User selection via station nodes click
-          const selectStation = (seq) => {
-            if (seq === 4) {
-              toStation.value = 4;
-            } else {
-              fromStation.value = seq;
-            }
-          };
-
-          // QUERY AVAILABILITY (GET /api/v1/query)
-          const queryAvailability = async () => {
-            pushLog(
-              `[Query] 向后端发起余票查询 (Route: ${fromStation.value} -> ${toStation.value})...`,
-            );
-
-            try {
-              const url = `${BACKEND_URL}/api/v1/query?schedule_id=${SCHEDULE_ID}&from_station_seq=${fromStation.value}&to_station_seq=${toStation.value}&seat_class=${SEAT_CLASS}`;
-              const response = await fetch(url);
-              if (!response.ok)
-                throw new Error(`HTTP Error Status: ${response.status}`);
-
-              const data = await response.json();
-              availableSeats.value = data.available_seats;
-              hasQueried.value = true;
-
-              // Mock self-healing display indicator for cold projections on first query
-              if (
-                queryMissCount.value === 0 ||
-                (fromStation.value === 1 &&
-                  toStation.value === 3 &&
-                  queryMissCount.value === 1)
-              ) {
-                isCacheMiss.value = true;
-                pushLog(
-                  `[CQRS-Heal] 读缓存未命中 (Cache Miss)，写侧投影器已异步触发冷源重算并重新建立 Redis 哈希视图！`,
-                  "var(--color-amber)",
-                );
-                queryMissCount.value++;
-              } else {
-                isCacheMiss.value = false;
-                pushLog(
-                  `[CQRS-Hit] 读缓存秒命中 (Redis Hit)，当前可用商务票数: ${availableSeats.value} 张`,
-                  "var(--color-emerald)",
-                );
-              }
-
-              if (availableSeats.value <= 0) {
-                pushLog(
-                  `[SOLD_OUT] 很抱歉，当前区间可分配席位已被买断售罄！`,
-                  "var(--color-rose)",
-                );
-              }
-            } catch (error) {
-              pushLog(
-                `[Error] 余票查询失败: ${error.message}. 请确保 Uvicorn 后端在 http://localhost:8000 运行并已拉起 Docker。`,
-                "var(--color-rose)",
-              );
-              alert("API 网络连通性失败，请查看日志控制台");
-            }
-          };
-
-          // RESERVE TICKET (POST /api/v1/reserve)
-          const reserveTicket = async () => {
-            const reqId =
-              "REQ_WEB_" +
-              Math.random().toString(36).substr(2, 9).toUpperCase();
-            pushLog(
-              `[Reserve] 正在向分配中心预留座位，Request ID: ${reqId}...`,
-            );
-
-            try {
-              const url = `${BACKEND_URL}/api/v1/reserve`;
-              const response = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  request_id: reqId,
-                  schedule_id: SCHEDULE_ID,
-                  from_station_seq: fromStation.value,
-                  to_station_seq: toStation.value,
-                  seat_class: SEAT_CLASS,
-                }),
-              });
-
-              if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(
-                  errorData.detail || `HTTP Error ${response.status}`,
-                );
-              }
-
-              const data = await response.json();
-              reservationId.value = data.reservation_id;
-
-              pushLog(
-                `[Success] 预占锁座成功！Reservation ID: ${reservationId.value}`,
-                "var(--color-emerald)",
-              );
-              pushLog(
-                `[Lock] MySQL 区间行锁、Redis 位掩码已原子加锁，预留状态为: HELD`,
-                "var(--color-amber)",
-              );
-
-              // Initialize holding countdown timer (60 seconds holding lock)
-              startCountdown();
-            } catch (error) {
-              pushLog(
-                `[Error] 占座锁定失败: ${error.message}`,
-                "var(--color-rose)",
-              );
-              alert(`抢票失败: ${error.message}`);
-            }
-          };
-
-          // Holding Countdown Handler
-          const startCountdown = () => {
-            if (countdownInterval) clearInterval(countdownInterval);
-            secondsLeft.value = 60;
-
-            countdownInterval = setInterval(() => {
-              secondsLeft.value--;
-              if (secondsLeft.value <= 0) {
-                clearInterval(countdownInterval);
-                pushLog(
-                  "[Timeout] 预占已超过 60s 支付限期，该订单在底层已被废弃。请点击下方管理按钮运行定时任务强制回收！",
-                  "var(--color-rose)",
-                );
-              }
-            }, 1000);
-          };
-
-          // CREATE ORDER & PAY ORDER (POST /api/v1/order -> POST /api/v1/pay)
-          const payOrder = async () => {
-            if (secondsLeft.value <= 0) {
-              alert("订单已超时失效，请重新预占！");
-              return;
-            }
-
-            const reqId =
-              "REQ_PAY_" +
-              Math.random().toString(36).substr(2, 9).toUpperCase();
-            pushLog(
-              `[Pay] 正在为预约单 ${reservationId.value} 创建正式待付订单...`,
-            );
-
-            try {
-              // Step A: Create Order StateWAITTING_PAYMENT
-              const orderUrl = `${BACKEND_URL}/api/v1/order`;
-              const orderResponse = await fetch(orderUrl, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  request_id: reqId,
-                  reservation_id: reservationId.value,
-                  amount: 250.0,
-                }),
-              });
-
-              if (!orderResponse.ok) {
-                const errorData = await orderResponse.json();
-                throw new Error(`创建订单失败: ${errorData.detail}`);
-              }
-
-              const orderData = await orderResponse.json();
-              orderId.value = orderData.order_id;
-              pushLog(
-                `[Order] 订单生成成功，ID: ${orderId.value}，进入状态: WAITING_PAYMENT`,
-              );
-
-              // Step B: Pay Order (Confirm and settle seat segments)
-              pushLog(`[Gateway] 正在调起银行扣款网关并核销订单...`);
-              const payUrl = `${BACKEND_URL}/api/v1/pay`;
-              const payResponse = await fetch(payUrl, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ order_id: orderId.value }),
-              });
-
-              if (!payResponse.ok) {
-                const errorData = await payResponse.json();
-                throw new Error(`订单支付失败: ${errorData.detail}`);
-              }
-
-              const payResult = await payResponse.json();
-              if (payResult.success) {
-                if (countdownInterval) clearInterval(countdownInterval);
-                isPaid.value = true;
-                pushLog(
-                  `[Success] 支付成功！状态机转移为: CONFIRMED。席位永久段锁已被原子占领！`,
-                  "var(--color-emerald)",
-                );
-                pushLog(
-                  `[Outbox] 事务性发件箱已写入 "ORDER_PAID" 物理事件，准备通知高并发 Kafka 进行一致性投影。`,
-                  "var(--color-rail-blue)",
-                );
-              } else {
-                throw new Error("扣款网关返回核销失败");
-              }
-            } catch (error) {
-              pushLog(
-                `[Error] 支付失败: ${error.message}`,
-                "var(--color-rose)",
-              );
-              alert(error.message);
-            }
-          };
-
-          // ADMIN TRIGGER CRON TIMEOUT RELEASE (POST /api/v1/cron/release)
-          const triggerCronRelease = async () => {
-            pushLog(`[Cron] 手动调度后台超时清理 Worker ...`);
-
-            try {
-              const url = `${BACKEND_URL}/api/v1/cron/release`;
-              const response = await fetch(url, { method: "POST" });
-              if (!response.ok)
-                throw new Error(`Cron 触发失败 Status: ${response.status}`);
-
-              const data = await response.json();
-              const released = data.released_count;
-
-              if (released > 0) {
-                pushLog(
-                  `[Cron-Cleanup] 清理成功！物理发还了 ${released} 个超时未付的过期座位段。`,
-                  "var(--color-emerald)",
-                );
-                pushLog(
-                  `[Cron-Sync] 倒带 Redis 内存占用，同时向 Outbox 插入了释放事件以确保最终一致性！`,
-                  "var(--color-rail-blue)",
-                );
-
-                if (secondsLeft.value <= 0 && reservationId.value) {
-                  resetWorkflow();
-                }
-                await queryAvailability(); // Auto re-query to pull fresh state
-              } else {
-                pushLog(`[Cron-Skip] 无任何超期未支付席位，跳过回收逻辑。`);
-              }
-            } catch (error) {
-              pushLog(
-                `[Error] Cron 清理执行异常: ${error.message}`,
-                "var(--color-rose)",
-              );
-            }
-          };
-
-          // Reset workflows for next ticket purchase
-          const resetWorkflow = () => {
-            reservationId.value = null;
-            orderId.value = null;
-            isPaid.value = false;
-            if (countdownInterval) clearInterval(countdownInterval);
-            pushLog("重置前端购票面板，旅客可以进行下一次区间抢购。");
-          };
-
-          // Lifecycle Hooks
-          onMounted(() => {
-            pushLog("Vue 3 响应式微内核组件挂载完成，等待旅客查询操作...");
-          });
-
-          return {
-            stations,
-            fromStation,
-            toStation,
-            availableSeats,
-            isCacheMiss,
-            hasQueried,
-            reservationId,
-            orderId,
-            secondsLeft,
-            isPaid,
-            logs,
-            activeTrackStyle,
-            progressBarStyle,
-            isReserveDisabled,
-            selectStation,
-            queryAvailability,
-            reserveTicket,
-            payOrder,
-            triggerCronRelease,
-            resetWorkflow,
-          };
-        },
-      }).mount("#app");
-    </script>
+    <!-- Link physically split Vue Application logic module (Natively served as ES Module) -->
+    <script type="module" src="/static/app.js"></script>
   </body>
 </html>

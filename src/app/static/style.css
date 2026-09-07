@@ -1,0 +1,32 @@
+/* Custom non-utility transitions and CSS state hooks for the 12306 Dashboard */
+
+/* Interactive Rail Track Node Active State Transitions */
+.station-node.active .station-dot {
+  background-color: #38bdf8 !important;
+  border-color: #020617 !important;
+  box-shadow: 0 0 14px #38bdf8;
+  transform: scale(1.25);
+}
+
+.station-node.active .station-name {
+  color: #f8fafc !important;
+}
+
+/* Customized Neon Glow Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.3);
+}

@@ -51,6 +51,8 @@ class Seat(Base):
     carriage_no = Column(String(16), nullable=False)
     seat_no = Column(String(16), nullable=False)
     seat_class = Column(String(32), nullable=False)
+    is_long_distance_pool = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    quota_released = Column(Integer, nullable=False, default=0, server_default=text("0"))
 
     schedule = relationship("TrainSchedule", back_populates="seats")
     segments = relationship("SeatSegment", back_populates="seat", cascade="all, delete-orphan")
