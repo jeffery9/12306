@@ -1,0 +1,319 @@
+---
+# 🌌 12306 Master Ansible Playbook: Deploy Production Patroni PostgreSQL HA Cluster
+# 生产环境一键部署剧本 (支持系统调优、etcd、Patroni PG、HAProxy 与 PgBouncer)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 1: OS Provisioning and Performance Tuning
+# 适用于所有生产节点的硬件与 Linux 内核参数调优
+# ─────────────────────────────────────────────────────────────────────────────
+- name: SRE Performance and Kernel Optimization
+  hosts: all
+  tasks:
+    - name: Set vm.swappiness limit
+      sysctl:
+        name: vm.swappiness
+        value: "{{ sysctl_swappiness }}"
+        state: present
+        reload: yes
+
+    - name: Configure Linux Hugepages
+      sysctl:
+        name: vm.nr_hugepages
+        value: "{{ hugepages_count }}"
+        state: present
+        reload: yes
+
+    - name: Set memory overcommit parameters
+      sysctl:
+        name: vm.overcommit_memory
+        value: "{{ sysctl_overcommit_memory }}"
+        state: present
+        reload: yes
+
+    - name: Set file limits descriptor count
+      pam_limits:
+        domain: "*"
+        limit_type: "-"
+        limit_item: nofile
+        value: "1048576"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 2: Deploy etcd Distributed Consensus Cluster
+# 部署 3 节点强一致协调服务，做自动化健康心跳与选主竞选
+# ─────────────────────────────────────────────────────────────────────────────
+- name: Deploy etcd DCS Cluster
+  hosts: etcd
+  tasks:
+    - name: Install etcd server packages
+      package:
+        name: etcd
+        state: present
+
+    - name: Generate etcd configuration yml
+      copy:
+        dest: /etc/etcd/etcd.yml
+        content: |
+          name: '{{ etcd_name }}'
+          data-dir: '/var/lib/etcd'
+          listen-peer-urls: 'http://{{ ansible_host }}:2380'
+          listen-client-urls: 'http://{{ ansible_host }}:2379,http://127.0.0.1:2379'
+          initial-advertise-peer-urls: 'http://{{ ansible_host }}:2380'
+          advertise-client-urls: 'http://{{ ansible_host }}:2379'
+          initial-cluster: 'etcd1=http://10.0.10.11:2380,etcd2=http://10.0.10.12:2380,etcd3=http://10.0.10.13:2380'
+          initial-cluster-token: '{{ etcd_cluster_token }}'
+          initial-cluster-state: 'new'
+
+    - name: Start and enable etcd systemd service
+      systemd:
+        name: etcd
+        state: restarted
+        enabled: yes
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 3: Deploy PostgreSQL 15 & Patroni HA Orchestrator
+# 部署数据库实体和自动化管理探针 (包含流复制插槽和读写分离 standby 参数)
+# ─────────────────────────────────────────────────────────────────────────────
+- name: Deploy Patroni PostgreSQL Nodes
+  hosts: postgres
+  tasks:
+    - name: Install PostgreSQL 15 and Pip
+      apt:
+        name:
+          - "postgresql-{{ pg_version }}"
+          - "postgresql-contrib-{{ pg_version }}"
+          - python3-pip
+          - python3-psycopg2
+        state: present
+        update_cache: yes
+
+    - name: Install Patroni Python Package
+      pip:
+        name: patroni[etcd3]
+        state: present
+
+    - name: Create Patroni Configuration Directory
+      file:
+        path: /etc/patroni
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0750'
+
+    - name: Generate Patroni Production patroni.yml
+      copy:
+        dest: /etc/patroni/patroni.yml
+        owner: postgres
+        group: postgres
+        mode: '0640'
+        content: |
+          scope: {{ cluster_scope }}
+          name: {{ patroni_name }}
+          namespace: /service
+
+          etcd3:
+            hosts: {{ etcd_endpoints }}
+
+          restapi:
+            listen: {{ ansible_host }}:8008
+            connect_address: {{ ansible_host }}:8008
+
+          bootstrap:
+            dcs:
+              ttl: 30
+              loop_wait: 10
+              retry_timeout: 10
+              maximum_lag_on_failover: 1048576
+              synchronous_mode: true
+              postgresql:
+                use_pg_rewind: true
+                use_slots: true
+                parameters:
+                  shared_buffers: {{ pg_shared_buffers }}
+                  work_mem: {{ pg_work_mem }}
+                  maintenance_work_mem: {{ pg_maintenance_work_mem }}
+                  effective_cache_size: {{ pg_effective_cache_size }}
+                  wal_level: replica
+                  synchronous_commit: "{{ pg_synchronous_commit }}"
+                  checkpoint_completion_target: 0.9
+                  max_wal_size: 16GB
+                  min_wal_size: 2GB
+                  deadlock_timeout: {{ pg_deadlock_timeout }}
+                  
+                  # 流复制与读写分离核心参数 (生产级防查询中断冲突)
+                  hot_standby: "on"
+                  hot_standby_feedback: "on"
+                  max_standby_archive_delay: 30s
+                  max_standby_streaming_delay: 30s
+                  wal_receiver_timeout: 60s
+                  max_replication_slots: 10
+
+                  autovacuum: "on"
+                  autovacuum_max_workers: {{ pg_autovacuum_workers }}
+                  autovacuum_vacuum_scale_factor: {{ pg_autovacuum_scale_factor }}
+                  autovacuum_vacuum_cost_limit: {{ pg_autovacuum_vacuum_cost_limit }}
+
+            initdb:
+              - encoding: UTF8
+              - data-checksums
+
+            pg_hba:
+              - host replication replicator 0.0.0.0/0 md5
+              - host all all 0.0.0.0/0 md5
+
+          postgresql:
+            listen: {{ ansible_host }}:5432
+            connect_address: {{ ansible_host }}:5432
+            data_dir: /var/lib/postgresql/{{ pg_version }}/main
+            bin_dir: /usr/lib/postgresql/{{ pg_version }}/bin
+            pgpass: /var/lib/postgresql/.pgpass
+            authentication:
+              superuser:
+                username: {{ db_superuser }}
+                password: {{ db_superuser_password }}
+              replication:
+                username: {{ db_repl_user }}
+                password: {{ db_repl_password }}
+
+    - name: Generate Patroni Systemd Service Unit
+      copy:
+        dest: /etc/systemd/system/patroni.service
+        content: |
+          [Unit]
+          Description=Patroni PostgreSQL HA Agent
+          After=syslog.target network.target
+
+          [Service]
+          Type=simple
+          User=postgres
+          Group=postgres
+          ExecStart=/usr/local/bin/patroni /etc/patroni/patroni.yml
+          ExecReload=/bin/kill -HUP $MAINPID
+          KillMode=process
+          TimeoutSec=30
+          Restart=no
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload Systemd and Boot Patroni HA Nodes
+      systemd:
+        daemon_reload: yes
+        name: patroni
+        state: restarted
+        enabled: yes
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 4: Deploy HAProxy (Load Balancer & 切流中枢)
+# ─────────────────────────────────────────────────────────────────────────────
+- name: Deploy HAProxy
+  hosts: haproxy
+  tasks:
+    - name: Install HAProxy Package
+      package:
+        name: haproxy
+        state: present
+
+    - name: Copy HAProxy Configuration File
+      copy:
+        dest: /etc/haproxy/haproxy.cfg
+        content: |
+          global
+              maxconn 10000
+              log /dev/log local0
+
+          defaults
+              log global
+              mode tcp
+              retries 3
+              timeout connect 10s
+              timeout client 30m
+              timeout server 30m
+
+          listen stats
+              mode http
+              bind 0.0.0.0:7000
+              stats enable
+              stats uri /
+              stats refresh 5s
+              http-request use-service promo-service if { path /metrics }
+
+          backend pg_write_backend
+              mode tcp
+              option httpchk GET /primary
+              http-check expect status 200
+              default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+              server pg-prod1 10.0.10.21:5432 maxconn 1000 check port 8008
+              server pg-prod2 10.0.10.22:5432 maxconn 1000 check port 8008
+              server pg-prod3 10.0.10.23:5432 maxconn 1000 check port 8008
+
+          frontend pg_write_front
+              bind 0.0.0.0:5000
+              mode tcp
+              default_backend pg_write_backend
+
+          backend pg_read_backend
+              mode tcp
+              balance roundrobin
+              option httpchk GET /replica
+              http-check expect status 200
+              default-server inter 3s fall 3 rise 2
+              server pg-prod1 10.0.10.21:5432 maxconn 2000 check port 8008
+              server pg-prod2 10.0.10.22:5432 maxconn 2000 check port 8008
+              server pg-prod3 10.0.10.23:5432 maxconn 2000 check port 8008
+
+          frontend pg_read_front
+              bind 0.0.0.0:5001
+              mode tcp
+              default_backend pg_read_backend
+
+    - name: Start HAProxy service
+      systemd:
+        name: haproxy
+        state: restarted
+        enabled: yes
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 5: Deploy PgBouncer (事务级高并发连接缓冲层)
+# ─────────────────────────────────────────────────────────────────────────────
+- name: Deploy PgBouncer Pooler
+  hosts: pgbouncer
+  tasks:
+    - name: Install PgBouncer Package
+      package:
+        name: pgbouncer
+        state: present
+
+    - name: Configure PgBouncer
+      copy:
+        dest: /etc/pgbouncer/pgbouncer.ini
+        content: |
+          [databases]
+          * = host=10.0.10.31 port=5000 auth_user=postgres
+
+          [pgbouncer]
+          logfile = /var/log/postgresql/pgbouncer.log
+          pidfile = /var/run/postgresql/pgbouncer.pid
+          listen_addr = *
+          listen_port = 6432
+          auth_type = md5
+          auth_file = /etc/pgbouncer/userlist.txt
+          pool_mode = transaction
+          max_client_conn = 10000
+          default_pool_size = 50
+          min_pool_size = 10
+          reserve_pool_size = 5
+          server_idle_timeout = 600
+          max_db_connections = 200
+
+    - name: Generate userlist auth file
+      copy:
+        dest: /etc/pgbouncer/userlist.txt
+        content: |
+          "postgres" "ProdPostgresStrongPassword123!"
+
+    - name: Start PgBouncer service
+      systemd:
+        name: pgbouncer
+        state: restarted
+        enabled: yes
+...

@@ -1,0 +1,31 @@
+# 🌌 Global Cluster Parameters (Production Environment Tuning)
+# 12306 生产集群全局配置变量与 PostgreSQL 调优参数
+
+# 1. Credentials & Auth
+pg_version: "15"
+db_superuser: "postgres"
+db_superuser_password: "ProdPostgresStrongPassword123!"
+db_repl_user: "replicator"
+db_repl_password: "ProdReplicationStrongPassword456!"
+
+# 2. Network Configurations
+cluster_scope: "ticketing-prod-cluster"
+etcd_cluster_token: "etcd-prod-token"
+etcd_endpoints: "10.0.10.11:2379,10.0.10.12:2379,10.0.10.13:2379"
+
+# 3. Kernel & Physical Hardware Tuning
+hugepages_count: 8192                # 预留大页数量 (8192 * 2MB = 16GB 内存用于 shared_buffers)
+sysctl_swappiness: 10                # 极少交换，避免 I/O 停顿
+sysctl_overcommit_memory: 2          # 严格内存控制，防止 OOM-killer 扼杀 PG 进程
+
+# 4. postgresql.conf Tuning Parameters (Production Grade)
+pg_shared_buffers: "16GB"
+pg_work_mem: "64MB"
+pg_maintenance_work_mem: "2GB"
+pg_effective_cache_size: "48GB"
+pg_max_connections: 500
+pg_synchronous_commit: "off"          # 核心：异步 WAL 组提交提升吞吐量 300%
+pg_deadlock_timeout: "100ms"         # 快速死锁解锁 (100ms)
+pg_autovacuum_workers: 8
+pg_autovacuum_scale_factor: 0.05     # 5% 记录被改写时立刻触发，防止写放大
+pg_autovacuum_vacuum_cost_limit: 2000
