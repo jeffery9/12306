@@ -69,7 +69,15 @@ const app = createApp({
   },
   setup() {
     // Configuration Constants
-    const BACKEND_URL = "http://localhost:8000";
+    const backendUrl = ref(localStorage.getItem("active_backend_url") || "http://localhost:8000");
+
+    const saveBackendChoice = () => {
+      localStorage.setItem("active_backend_url", backendUrl.value);
+      pushLog(`[System] 后端 API 引擎切换为: ${backendUrl.value}`);
+      if (hasQueried.value) {
+        queryAvailability();
+      }
+    };
     const SCHEDULE_ID = 1;
     const SEAT_CLASS = "BUSINESS";
 
@@ -182,7 +190,7 @@ const app = createApp({
       splitItinerary.value = null;
 
       try {
-        const url = `${BACKEND_URL}/api/v1/query?schedule_id=${SCHEDULE_ID}&from_station_seq=${fromStation.value}&to_station_seq=${toStation.value}&seat_class=${SEAT_CLASS}`;
+        const url = `${backendUrl.value}/api/v1/query?schedule_id=${SCHEDULE_ID}&from_station_seq=${fromStation.value}&to_station_seq=${toStation.value}&seat_class=${SEAT_CLASS}`;
         const response = await fetch(url);
         if (!response.ok)
           throw new Error(`HTTP Error Status: ${response.status}`);
@@ -233,7 +241,7 @@ const app = createApp({
       pushLog(`[Smart-Recompose] 智能换乘接续引擎开始推演中转拼位...`);
       
       try {
-        const url = `${BACKEND_URL}/api/v1/query/recompose?schedule_id=${SCHEDULE_ID}&from_station_seq=${fromStation.value}&to_station_seq=${toStation.value}&seat_class=${SEAT_CLASS}`;
+        const url = `${backendUrl.value}/api/v1/query/recompose?schedule_id=${SCHEDULE_ID}&from_station_seq=${fromStation.value}&to_station_seq=${toStation.value}&seat_class=${SEAT_CLASS}`;
         const response = await fetch(url);
         if (!response.ok) throw new Error("接续引擎调用失败");
 
@@ -271,7 +279,7 @@ const app = createApp({
       }
 
       try {
-        const url = `${BACKEND_URL}/api/v1/reserve`;
+        const url = `${backendUrl.value}/api/v1/reserve`;
         const response = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -333,7 +341,7 @@ const app = createApp({
       pushLog(`[Split-Reserve] 正在一键原子锁定同车拼位接续座位...`);
 
       try {
-        const url = `${BACKEND_URL}/api/v1/reserve/split`;
+        const url = `${backendUrl.value}/api/v1/reserve/split`;
         const response = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -410,7 +418,7 @@ const app = createApp({
 
       try {
         // Step A: Create Order
-        const orderUrl = `${BACKEND_URL}/api/v1/order`;
+        const orderUrl = `${backendUrl.value}/api/v1/order`;
         const orderResponse = await fetch(orderUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -434,7 +442,7 @@ const app = createApp({
 
         // Step B: Pay Order (Confirm and settle seat segments)
         pushLog(`[Gateway] 正在调起银行扣款网关并核销订单...`);
-        const payUrl = `${BACKEND_URL}/api/v1/pay`;
+        const payUrl = `${backendUrl.value}/api/v1/pay`;
         const payResponse = await fetch(payUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -475,7 +483,7 @@ const app = createApp({
       pushLog(`[Cron] 手动调度后台超时清理 Worker ...`);
 
       try {
-        const url = `${BACKEND_URL}/api/v1/cron/release`;
+        const url = `${backendUrl.value}/api/v1/cron/release`;
         const response = await fetch(url, { method: "POST" });
         if (!response.ok)
           throw new Error(`Cron 触发失败 Status: ${response.status}`);
@@ -513,7 +521,7 @@ const app = createApp({
       pushLog(`[Ops] 正在手动调用客运调度 API 一键合并长途限售配额...`);
 
       try {
-        const url = `${BACKEND_URL}/api/v1/ops/quota/release`;
+        const url = `${backendUrl.value}/api/v1/ops/quota/release`;
         const response = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -592,6 +600,8 @@ const app = createApp({
       triggerCronRelease,
       releaseLongDistanceQuota,
       resetWorkflow,
+      backendUrl,
+      saveBackendChoice,
     };
   },
 });

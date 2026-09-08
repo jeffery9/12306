@@ -72,5 +72,13 @@ services:
       REDIS_URL: redis://redis:6379/0
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
 
+  frontend:
+    build:
+      context: ./src/web
+    container_name: ticketing_frontend
+    ports:
+      - "8080:80"
+    restart: always
+
 volumes:
   mysql_data:

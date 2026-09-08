@@ -44,9 +44,21 @@
           基于 CQRS 读写分离、内存段位图预占与事务发件箱架构的高并发区间票务分配系统 MVP
           (Vue 3 + ESM 原生组件化编排)
         </p>
-        <span class="inline-block bg-sky-500/10 border border-sky-500/30 text-rail-blue px-3 py-1 rounded-full text-xs font-semibold mt-3 shadow-[0_0_12px_rgba(56,189,248,0.1)]">
-          复兴号 G888 次 ── 商务特等座舱
-        </span>
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-3 mt-3">
+          <span class="inline-block bg-sky-500/10 border border-sky-500/30 text-rail-blue px-3 py-1 rounded-full text-xs font-semibold shadow-[0_0_12px_rgba(56,189,248,0.1)]">
+            复兴号 G888 次 ── 商务特等座舱
+          </span>
+          <div class="flex items-center bg-slate-800/80 border border-slate-700/60 rounded-full px-3 py-1 shadow-sm gap-2">
+            <span class="text-slate-400 text-xs font-medium">🔌 后端引擎一键切换:</span>
+            <select v-model="backendUrl" @change="saveBackendChoice" class="bg-transparent text-xs text-sky-400 font-bold border-none focus:outline-none cursor-pointer">
+              <option value="http://localhost:8000" class="bg-slate-900 text-slate-100">Python API (Port 8000)</option>
+              <option value="http://localhost:8001" class="bg-slate-900 text-slate-100">Go API (Port 8001)</option>
+              <option value="http://localhost:8002" class="bg-slate-900 text-slate-100">.NET API (Port 8002)</option>
+              <option value="http://localhost:8003" class="bg-slate-900 text-slate-100">Java Spring (Port 8003)</option>
+              <option value="http://localhost:8004" class="bg-slate-900 text-slate-100">Rust Axum (Port 8004)</option>
+            </select>
+          </div>
+        </div>
       </header>
 
       <!-- 1. Route Selector Component (V-Model Bound) -->
