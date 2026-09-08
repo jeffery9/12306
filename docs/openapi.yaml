@@ -1,0 +1,392 @@
+openapi: 3.0.3
+info:
+  title: 12306 Next-Gen Core Ticket Allocation Engine API Specification
+  description: |
+    本规范定义了 12306 高并发票务分配系统（Python FastAPI、Go、.NET 7.0、Java Spring 和 Rust Axum）共享的统一核心交易与运维 API。
+    系统架构基于 **CQRS（读写分离）** 与 **内存二进制段位图（Segment Bitmask）** 预占锁机制，保障在超高并发、超低时延下的区间票额原子卡位和分布式数据最终一致性。
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000
+    description: Python FastAPI 异步微服务引擎 (默认)
+  - url: http://localhost:8001
+    description: Go 1.24+ 极速无锁分配引擎
+  - url: http://localhost:8002
+    description: C# .NET 7.0 顶级并发 Minimal API 引擎
+  - url: http://localhost:8003
+    description: Java Spring Cloud 并发架构引擎
+  - url: http://localhost:8004
+    description: Rust Axum 极高并发异步安全分配引擎
+paths:
+  /api/v1/query:
+    get:
+      tags:
+        - CQRS Query (读大屏)
+      summary: 动态最终一致性高并发可用余票查询
+      description: 优先从 Redis 高速缓存 Hash 中直接获取区间余票，若缓存冷失效（Miss），则自动触发后端重算（Recalculate & Project）回源并重新投影至 Redis。
+      parameters:
+        - name: schedule_id
+          in: query
+          required: true
+          description: 发车计划排班 ID (例如 G888 次为 1)
+          schema:
+            type: integer
+            example: 1
+        - name: from_station_seq
+          in: query
+          required: true
+          description: 出发站物理序号（升序，北京=1）
+          schema:
+            type: integer
+            example: 1
+        - name: to_station_seq
+          in: query
+          required: true
+          description: 到达站物理序号（升序，上海=4）
+          schema:
+            type: integer
+            example: 3
+        - name: seat_class
+          in: query
+          required: true
+          description: 坐席级别（BUSINESS=商务特等座，FIRST=一等座）
+          schema:
+            type: string
+            enum: [BUSINESS, FIRST]
+            example: BUSINESS
+      responses:
+        '200':
+          description: 查询成功，返回可用物理剩余票额。
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available_seats:
+                    type: integer
+                    description: 动态重算或缓存命中的可用余票数
+                    example: 15
+        '400':
+          description: 请求参数校验失败（例如区间越界或站序不合理）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 服务器底层数据库或缓存连接异常
+
+  /api/v1/reserve:
+    post:
+      tags:
+        - Transaction Command (写模型)
+      summary: 原子位图加 PostgreSQL 升序互斥锁区间预占 (购票第一步)
+      description: |
+        高能核心卡票流程：
+        1. 物理遍历获取目标车次、席级的所有座位。
+        2. 在 Redis 中运行原子 **Lua 预占脚本**（使用段位图 Mask 执行并发碰撞拦截）。
+        3. Redis 预占成功后，进入 PostgreSQL 物理事务，对所占座位的目标段加 **升序行级锁（SELECT FOR UPDATE）**，完美免疫任何死锁。
+        4. 本地提交事务，插入预留记录，归档 **Transactional Outbox Event (RESERVATION_HELD)**。
+        5. 发生任何物理数据库冲突时，自动触发 **Lua Revert** 回滚 Redis 位图状态。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReserveRequest'
+      responses:
+        '200':
+          description: 预占锁票成功，返回预留事务单号及锁定物理座位。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReserveResponse'
+        '409':
+          description: 余票不足、位图锁碰撞冲突或数据库记录状态已被占用。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 数据库事务提交失败或 Lua 脚本执行异常。
+
+  /api/v1/order:
+    post:
+      tags:
+        - Transaction Command (写模型)
+      summary: 同步交易支付订单创建 (购票第二步)
+      description: 依据成功的预占 Reservation 凭证，同步创建一条等待支付（WAITING_PAYMENT）的订单记录，进入 15 分钟倒计时锁单生命周期。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderRequest'
+      responses:
+        '200':
+          description: 订单创建成功，进入等待支付状态。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '500':
+          description: 数据库订单流水记录失败。
+
+  /api/v1/pay:
+    post:
+      tags:
+        - Transaction Command (写模型)
+      summary: 模拟支付核销与最终一致投影触发 (购票最终步)
+      description: |
+        支付支付确认流程：
+        1. 物理行级锁（FOR UPDATE）锁订单记录。
+        2. 推进订单、Reservation、SeatSegment 物理状态机为 **CONFIRMED (确立已售)**。
+        3. 将 NEW 状态的 **ORDER_PAID** 消息插入本地事件发件箱（OutboxEvent）。
+        4. 异步 Publisher 瞬间捞取并推送给高吞吐 Projector 管道，全自动清除 Redis 位图脏区并完成最新余票投影更新。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayRequest'
+      responses:
+        '200':
+          description: 支付核销成功，已售状态落盘，异步余票投影已排队重算。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayResponse'
+        '409':
+          description: 订单已过期或处于非可支付状态（例如已确认或已取消）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 物理核销数据库死锁或网络异常。
+
+  /api/v1/ops/health:
+    get:
+      tags:
+        - SRE Maintain (运维探针)
+      summary: SRE 级别物理系统健康状态探针
+      description: 执行轻量级、低开销的数据库物理 Ping 和缓存 Ping，提供分钟级/秒级高可用集群自愈（Auto-Healing）判定依据。
+      responses:
+        '200':
+          description: 基础设施全部正常。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          description: 数据库或 Redis 离线崩溃，标记为非健康节点，通知负载均衡下线。
+
+  /api/v1/ops/trs/import-schedule:
+    post:
+      tags:
+        - SRE Maintain (运维探针)
+      summary: TRS 物理列车排班与座位段数据一键式原子灌入
+      description: 用于 SRE/Ops 或铁路排班系统一键将列车基本信息、沿途站点顺序序列、客车物理车厢座位配置以 PostgreSQL CTE ON CONFLICT 事务特性无损灌入。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportScheduleRequest'
+      responses:
+        '200':
+          description: 灌包与数据预热就绪。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportScheduleResponse'
+        '500':
+          description: 导入格式错误或主外键冲突导致回滚。
+
+components:
+  schemas:
+    ReserveRequest:
+      type: object
+      required:
+        - request_id
+        - schedule_id
+        - from_station_seq
+        - to_station_seq
+        - seat_class
+        - passenger_ids
+      properties:
+        request_id:
+          type: string
+          description: 防重幂等请求标头
+          example: REQ_BOOKING_20260908_001
+        schedule_id:
+          type: integer
+          description: 目标列车排班 ID
+          example: 1
+        from_station_seq:
+          type: integer
+          description: 起始站序号
+          example: 1
+        to_station_seq:
+          type: integer
+          description: 终点站序号
+          example: 3
+        seat_class:
+          type: string
+          description: 目标座舱级别
+          example: BUSINESS
+        passenger_ids:
+          type: array
+          items:
+            type: string
+          description: 旅客 ID 数组
+          example: [PSG_JEFF_CHEN_01]
+
+    ReserveResponse:
+      type: object
+      properties:
+        reservation_id:
+          type: string
+          description: 36 字节物理预留记录 UUID (HELD 状态)
+          example: c9b7754b-d748-4cb5-aa3a-59b6408db0a2
+        seat_id:
+          type: integer
+          description: 并发预占锁定的物理座位号
+          example: 45
+
+    OrderRequest:
+      type: object
+      required:
+        - request_id
+        - reservation_id
+        - amount
+      properties:
+        request_id:
+          type: string
+          description: 幂等防重单号
+          example: REQ_ORDER_20260908_001
+        reservation_id:
+          type: string
+          description: 关联的有效预占 Reservation ID
+          example: c9b7754b-d748-4cb5-aa3a-59b6408db0a2
+        amount:
+          type: number
+          format: double
+          description: 购票交易总金额
+          example: 288.50
+
+    OrderResponse:
+      type: object
+      properties:
+        order_id:
+          type: string
+          description: 生成的交易订单流水 UUID
+          example: 885fa2e4-df25-4fe2-ba4c-a1112b3c2c11
+        state:
+          type: string
+          description: 订单当前状态机
+          example: WAITING_PAYMENT
+
+    PayRequest:
+      type: object
+      required:
+        - order_id
+      properties:
+        order_id:
+          type: string
+          description: 需要支付的订单流水 ID
+          example: 885fa2e4-df25-4fe2-ba4c-a1112b3c2c11
+
+    PayResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: 最终确认支付是否落盘
+          example: true
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: healthy
+        postgresql:
+          type: string
+          example: up
+        redis:
+          type: string
+          example: up
+
+    ImportStationItem:
+      type: object
+      required:
+        - name
+        - sequence
+      properties:
+        name:
+          type: string
+          example: 北京
+        sequence:
+          type: integer
+          example: 1
+
+    ImportSeatItem:
+      type: object
+      required:
+        - carriage_no
+        - seat_no
+        - seat_class
+      properties:
+        carriage_no:
+          type: string
+          example: 01
+        seat_no:
+          type: string
+          example: 01A
+        seat_class:
+          type: string
+          example: BUSINESS
+
+    ImportScheduleRequest:
+      type: object
+      required:
+        - train_code
+        - service_date
+        - stations
+        - seats
+      properties:
+        train_code:
+          type: string
+          description: 列车物理车次号
+          example: G888
+        service_date:
+          type: string
+          format: date
+          description: 服务发车年月日
+          example: 2026-11-11
+        stations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportStationItem'
+        seats:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportSeatItem'
+
+    ImportScheduleResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        schedule_id:
+          type: integer
+          description: 灌包生成或已存在的排班列车主键 ID
+          example: 1
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: 具体的业务性冲突或格式校验异常信息
+          example: No seats available (Redis filtered)
