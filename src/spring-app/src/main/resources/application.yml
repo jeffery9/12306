@@ -1,0 +1,15 @@
+server:
+  port: ${PORT:8003}
+
+spring:
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/ticketing_db}
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 100
+      minimum-idle: 10
+  data:
+    redis:
+      url: ${REDIS_URL:redis://localhost:6379/0}
