@@ -54,9 +54,27 @@
 *   由于 CLI 底层部署了极为严苛的安全防御策略，任何包含 **反引号（` `）**、**美元符号配圆括号（`$(...)`）** 或 **小于号配圆括号（`<(...)`）** 的 Shell 命令均会被拦截（报错 `Blocked: command substitution detected`）。
 *   **绝对禁止使用 Shell 拼接生成 Markdown**：严禁通过 `cat EOF`、`echo` 在终端里注入 Markdown 格式，若有文档写入需要，**必须且只能**调用系统原生的 `write_file` 或 `replace` API 工具，彻底避开转义陷阱。
 
-### ③ 绝对 ASCII 框线图示与公式默认法则（No LaTeX & No Mermaid）
-*   为了确保在没有任何第三方渲染器的纯系统终端、Vim 或底层 Docker 容器内保持 100% 的可读性，本项目内所有架构图、数据流向图、库存与票额平衡计算公式，**默认且强制只能使用纯文本 ASCII 形式进行工整表达**。
-*   **严禁主动引入 LaTeX 公式或 Mermaid 块**（除非用户在 Prompt 里显式书写 `Mermaid` 命令）。
+### ③ 文档命名、公式与图示规范 (Documentation, Formulas, and Diagrams Standard)
+
+为了保障 12306 本地数据中心方案在持续协同研发中的极高严谨性，所有的工程设计文档、数学算式、系统图示均须遵循以下规范：
+
+#### A. 文档命名规范 (Document Naming Standard)
+*   **5 阶段双位数字生命周期层级**：全部文档须遵循统一前缀，用下划线隔离，严禁在文件名中包含空格（防止在 Shell 脚本中引起转义故障）：
+    *   `01_XX_`：业务标准阶段 (Business & PO Manual / User BDD Features)
+    *   `02_XX_`：算法阶段 (Bitmap 预占、核心座位扣减算法方案)
+    *   `03_XX_`：架构设计阶段 (High Concurrency, Event-Driven, Passenger Scheduling)
+    *   `04_XX_`：工程实现阶段 (Python Implementation & Development Guide)
+    *   `05_XX_`：生产部署与 SRE 高可用阶段 (Spine-Leaf Network, K8s, DR, Rate-limiting, SRE)
+*   **全部文档小写下划线**：物理文件名及超链接引用的文件名需使用小写蛇形命名（Snake_case，如 `05_05_12306_high_concurrency_capacity_planning_and_hardware_sizing.md`），以保持跨操作系统系统的绝对一致性。
+
+#### B. 数学公式规范 (Formula Standard)
+*   **100% LaTeX 表达**：所有的库存平衡公式、排队论模型、备件故障 Poisson 泊松分布、SLA 可用性概率推导、数据库有状态 I/O 吞吐模型等，必须使用标准的 $\text{\LaTeX}$（TeX）格式（块级使用 `$$ ... $$`，行内使用 `$ ... $`）进行排版，严禁使用粗糙的纯文本 ASCII 符号拼凑公式。
+*   **数学严谨性与参数参数化**：公式中每个常数、系数和概率因子都必须有硬核的 SRE/统计学支撑（如泊松分布在 $99.9\%$ 右侧单尾置信边界下的标准差倍数 $z$-score 精确为 `3.09`，不拍脑门）。
+
+#### C. 高精图示规范 (Diagram Standard)
+*   **逻辑/拓扑/时序首选 D2**：对于逻辑架构拓扑、跨中心多活时序、网络层级连通性、流量多级漏斗等，一律采用 **D2 工具生成高清矢量 SVG 格式图片**（D2 源码保存在 `docs/d2/*.d2` 中，编译打包输出到 `docs/images/*.svg`）。
+*   **物理布局、机柜与冷却首选 Draw.io**：对于物理层面的 42U 机架实物设备堆叠、RU 单元高度精确对齐、三维轴侧闭式冷通道冷却风道气流流程、Spine-Leaf 网络设备物料连接，**必须且只能采用 Draw.io XML 工具进行设计**（保存为 `docs/images/*.drawio` 并打包导出附带内嵌 XML 数据的 `.drawio.png` 或 `.svg`，以维护双向可读编辑能力）。
+
 
 ### ④ 无验证，不交付（Empirical Validation Overlord）
 *   **拒绝主观猜测**：严禁在测试未通过或未经本地运行的情况下对用户谎称“功能已修复/已交付”。
