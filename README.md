@@ -272,5 +272,6 @@ _AI 与人类工程师在 12306 这一千古难题上的这次极简交锋，证
 👉 **[点击阅读：《12306 生产级 Prometheus & Grafana 监控与智能告警架构设计方案》](./docs/05_11_12306_SRE_Prometheus_Grafana_Monitoring_and_Alerting_Architecture.md)**
 👉 **[点击阅读：《12306 缓存击穿、穿透与雪崩风险评估与极致自愈设计白皮书》](./docs/05_12_12306_SRE_Cache_Breakdown_Penetration_Avalanche_Mitigation_Whitepaper.md)**
 👉 **[点击阅读：《12306 极速缓存效率优化与 Redis 单点故障（SPOF）高可用平稳降级设计白皮书》](./docs/05_13_12306_SRE_Cache_High_Efficiency_and_Anti_SPOF_Multi_Tier_Degradation_Architecture.md)**
+👉 **[点击阅读：《12306 生产级 PostgreSQL 高可用集群架构、性能部署与极致编程白皮书》](./docs/05_14_12306_DB_PostgreSQL_Cluster_Architecture_Deployment_and_Programming_Guide.md)**
 
 这些设计与白皮书详述了如何通过 **“CDN 智能边缘预热”、“排队削峰网关”、“MySQL 五百一十二等份细胞化分表（Cellular Sharding）” 以及 “CDC 增量解耦”** 的物理堆叠，配合高主频 Redis 节点、512 主从 MySQL SSD 磁盘矩阵、跨中心光环线的精确配置计算，以及云原生 HPA/KEDA 自动弹性缩容的年度降本 ROI 核算，在代码微观骨架不变的前提下，构建出承载地狱级峰值且极具财务性价比的数字长城。
