@@ -297,7 +297,7 @@ async def publish_events(db_session):
 
 ### 4.1 Pytest-BDD 验收用例与同步桥接机制
 
-项目在 `src/tests/test_bdd_ticketing.py` 中，采用同步-异步桥接模式（Synchronous Bridge Pattern），完美集成了 Gherkin BDD 场景验收：
+项目在 `tests/test_bdd_ticketing.py` 中，采用同步-异步桥接模式（Synchronous Bridge Pattern），完美集成了 Gherkin BDD 场景验收：
 
 ```gherkin
 Feature: 12306 高并发区间票务分配系统核心功能
@@ -317,7 +317,7 @@ Feature: 12306 高并发区间票务分配系统核心功能
 
 ### 4.2 50路高并发冲突压力碰撞分析
 
-压测模块 `src/tests/test_concurrency_stress.py` 对单席位注入了 **50路多协程瞬间大流量购票冲突**。
+压测模块 `tests/test_concurrency_stress.py` 对单席位注入了 **50路多协程瞬间大流量购票冲突**。
 
 - 压力测试通过对协程的并发执行（`asyncio.gather`），模拟春运期间多站点热点争抢。
 - **验证结果**：无死锁发生，数据库 CPU 未产生锁爆表排队，位掩码在毫秒级过滤了全部 48 笔重叠区间抢夺，发还了高内聚的 100% 运力分发，完美证明了该模型在高并发下的物理吞吐。

@@ -75,7 +75,7 @@ case "$1" in
         print_banner
         echo -e "${AMBER}[Ops] Launching Locust load testing on Port 8089...${NC}"
         echo -e "${GREEN}[INFO] Please open http://localhost:8089 in your browser to run the stress test.${NC}"
-        ./venv/bin/locust -f src/tests/locustfile.py --host http://localhost:8000
+        ./venv/bin/locust -f tests/locustfile.py --host http://localhost:8000
         ;;
     *)
         usage
