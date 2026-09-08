@@ -91,46 +91,9 @@
 
 # 3. 系统物理架构拓扑 (System Topology)
 
-本系统严格实现读写模型完全物理隔离：
+本系统严格实现读写模型完全物理隔离，整体物理部署与读写分离架构拓扑如下图所示（基于高精 D2 矢量渲染）：
 
-```text
-                         ┌─────────────────────────────────────────────────────────┐
-                         │              TRS 局端权威调度系统 (TRS Portal)            │
-                         └──────────────────────────┬──────────────────────────────┘
-                                                    │ (POST /api/v1/ops/trs/import-schedule)
-                                                    ▼
-                         ┌─────────────────────────────────────────────────────────┐
-                         │                      Client (HTTP)                      │
-                         └──────────────────────────┬──────────────────────────────┘
-                                                    │
-                         ┌──────────────────────────▼──────────────────────────────┐
-                         │                     FastAPI Web App                     │
-                         └──────┬───────────────────────────────────┬──────────────┘
-                                │                                   │
-           ┌────────────────────┘                                   └────────────────────┐
-           ▼ (Command Side)                                                              ▼ (Query Side)
-    [ Command Service ]                                                           [ Query Service ]
-   (Reserve / Order / Pay)                                                         (GET /api/v1/query)
-           │                                                                             │
-     (Redis First Filter)                                                            (Cache Read)
-           ├──────────────► [ Redis Cache ] ◄────────────────────────────────────────────┤
-           ▼           ( r:{sched}:seat:{id} )                                           │
-     (DB Transaction)  ( q:availability:{id} )                                           │
-           │                                                                             │
-     [ MySQL Shard ]                                                                     │
-   ( SeatSegment Lock )                                                                  │
-   ( OutboxEvent Write )                                                                 │
-           │                                                                             │
-           ▼ (Polling FOR UPDATE SKIP LOCKED)                                            │
-   [ Outbox Publisher ]                                                                  │
-           │                                                                             │
-           ▼ (Publish)                                                                   │
-    [ Kafka Topic ] ─────────────────────────────────────────────────────────────────────┘
-    (ticket_events)                          (Process Event & Update Cache)
-                                                            │
-                                                            ▼
-                                                    [ Projector ]
-```
+![12306 自有数据中心物理部署与读写分离拓扑](docs/images/on_premise_architecture.svg)
 
 ---
 
