@@ -89,48 +89,11 @@
 
 ---
 
-# 3. 系统物理架构拓扑 (System Topology)
+# 3. 系统逻辑架构拓扑 (Logical CQRS Architecture)
 
-本系统严格实现读写模型完全物理隔离：
+本系统严格实现读写模型（CQRS）完全逻辑与物理隔离，其核心数据流与事件投影链路如下图所示（基于高精 D2 矢量渲染）：
 
-```text
-                         ┌─────────────────────────────────────────────────────────┐
-                         │              TRS 局端权威调度系统 (TRS Portal)            │
-                         └──────────────────────────┬──────────────────────────────┘
-                                                    │ (POST /api/v1/ops/trs/import-schedule)
-                                                    ▼
-                         ┌─────────────────────────────────────────────────────────┐
-                         │                      Client (HTTP)                      │
-                         └──────────────────────────┬──────────────────────────────┘
-                                                    │
-                         ┌──────────────────────────▼──────────────────────────────┐
-                         │                     FastAPI Web App                     │
-                         └──────┬───────────────────────────────────┬──────────────┘
-                                │                                   │
-           ┌────────────────────┘                                   └────────────────────┐
-           ▼ (Command Side)                                                              ▼ (Query Side)
-    [ Command Service ]                                                           [ Query Service ]
-   (Reserve / Order / Pay)                                                         (GET /api/v1/query)
-           │                                                                             │
-     (Redis First Filter)                                                            (Cache Read)
-           ├──────────────► [ Redis Cache ] ◄────────────────────────────────────────────┤
-           ▼           ( r:{sched}:seat:{id} )                                           │
-     (DB Transaction)  ( q:availability:{id} )                                           │
-           │                                                                             │
-     [ MySQL Shard ]                                                                     │
-   ( SeatSegment Lock )                                                                  │
-   ( OutboxEvent Write )                                                                 │
-           │                                                                             │
-           ▼ (Polling FOR UPDATE SKIP LOCKED)                                            │
-   [ Outbox Publisher ]                                                                  │
-           │                                                                             │
-           ▼ (Publish)                                                                   │
-    [ Kafka Topic ] ─────────────────────────────────────────────────────────────────────┘
-    (ticket_events)                          (Process Event & Update Cache)
-                                                            │
-                                                            ▼
-                                                    [ Projector ]
-```
+![12306 系统 CQRS 逻辑读写分离与事件投影架构](docs/images/cqrs_architecture.svg)
 
 ---
 

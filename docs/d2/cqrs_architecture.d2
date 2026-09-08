@@ -1,0 +1,89 @@
+# 12306 CQRS 逻辑读写分离与事件投影架构
+direction: down
+
+trs: "TRS 局端权威调度系统\n(TRS Portal)" {
+  style.fill: "#fff3bf"
+  style.stroke: "#fab005"
+}
+
+client: "客户端 / 浏览器\n(Client HTTP)" {
+  style.fill: "#e8f7ff"
+  style.stroke: "#339af0"
+}
+
+gateway: "FastAPI Web 网关\n(FastAPI Web App)" {
+  style.fill: "#eef2ff"
+  style.stroke: "#4c6ef5"
+}
+
+subgraph_command: "写侧管道 (Command Side)" {
+  style.fill: "#fff5f5"
+  style.stroke: "#ffc9c9"
+  
+  cmd_service: "交易写服务\n(Command Service)" {
+    style.fill: "#ffe3e3"
+    style.stroke: "#fa5252"
+  }
+  
+  redis_filter: "Redis 高速预占拦截" {
+    style.fill: "#ffe3e3"
+    style.stroke: "#fa5252"
+  }
+  
+  mysql_shard: "MySQL 细胞化分片\n(MySQL Shard)" {
+    style.fill: "#ffe3e3"
+    style.stroke: "#fa5252"
+    label: "MySQL 细胞化分片\n(SeatSegment 升序锁 + Outbox 写入)"
+  }
+  
+  outbox_pub: "发件箱发布器\n(Outbox Publisher)" {
+    style.fill: "#ffe3e3"
+    style.stroke: "#fa5252"
+    label: "发件箱发布器\n(SKIP LOCKED 毫秒级捞取)"
+  }
+  
+  cmd_service -> redis_filter: "1. 席位位图预占"
+  redis_filter -> mysql_shard: "2. 物理扣减 / 记录 Outbox"
+  mysql_shard -> outbox_pub: "3. 异步轮询"
+}
+
+subgraph_query: "读侧管道 (Query Side)" {
+  style.fill: "#ebfbee"
+  style.stroke: "#b2f2bb"
+  
+  query_service: "余票读服务\n(Query Service)" {
+    style.fill: "#e2f9e5"
+    style.stroke: "#40c057"
+  }
+}
+
+cache_center: "共享分布式缓存\n(Redis Cache Cluster)" {
+  style.fill: "#fff9db"
+  style.stroke: "#fcc419"
+  label: "Redis 缓存集群\n- r:预占位图\n- q:余票数快照"
+}
+
+kafka_mq: "分布式事件中枢\n(Kafka Topic: ticket_events)" {
+  style.fill: "#f8f9fa"
+  style.stroke: "#868e96"
+}
+
+projector: "只读投影重建器\n(Projector)" {
+  style.fill: "#f3f0ff"
+  style.stroke: "#7950f2"
+}
+
+# 外部数据流向连接
+trs -> gateway: "导入车次 / 预热缓存\n(POST /api/v1/ops/trs/import-schedule)" { style.stroke: "#fab005"; style.stroke-width: 2 }
+client -> gateway: "购票 / 查询余票" { style.stroke: "#339af0"; style.stroke-width: 2 }
+
+gateway -> subgraph_command.cmd_service: "写请求 (Reserve / Order / Pay)" { style.stroke: "#fa5252"; style.stroke-width: 2 }
+gateway -> subgraph_query.query_service: "读请求 (GET /api/v1/query)" { style.stroke: "#40c057"; style.stroke-width: 2 }
+
+# 组件内部流程交互
+subgraph_command.redis_filter -> cache_center: "更新预占位图" { style.stroke: "#fa5252"; style.stroke-dash: 3 }
+subgraph_query.query_service -> cache_center: "极速读余票数" { style.stroke: "#40c057"; style.stroke-width: 2 }
+
+subgraph_command.outbox_pub -> kafka_mq: "4. 发布交易事件" { style.stroke: "#fa5252"; style.stroke-width: 2 }
+kafka_mq -> projector: "5. 订阅事件" { style.stroke: "#7950f2"; style.stroke-width: 2 }
+projector -> cache_center: "6. 幂等重建余票缓存" { style.stroke: "#7950f2"; style.stroke-width: 2 }
