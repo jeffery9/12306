@@ -100,6 +100,81 @@
 - **单片内事务闭环**：单车次的 `Seat`、`SeatSegment`、`Reservation`、`Orders` 以及 `OutboxEvent` 全物理分布在同一个数据库 Shard 内。
 - **避免分布式事务**：购票、生成发件箱事件全在单片内的数据库本地事务中完成，彻底消灭高开销的分布式事务（XA 2PC）。
 
+### 2.4 核心 Python 服务组件协作时序与调用关系 (Service Interactions & Call Graph)
+
+为达成 CQRS 的高通量性能，系统内各核心服务（无状态 Web 进程、有状态事务层、异步后台 Worker 与投影消费协程）建立了严格的单向依赖与调用规约：
+
+```text
+ ┌────────────────┐
+ │   TRS Portal   │ (局端列车计划发布)
+ └───────┬────────┘
+         │ (1. POST /api/v1/ops/trs/import-schedule)
+         ▼
+ ┌────────────────┐             (2. GET /api/v1/query)             ┌──────────────────────┐
+ │   FastAPI GW   │◄───────────────────────────────────────────────┤     Client Browser   │
+ │ (web_server.py)├───────────────────────────────────────────────►└──────────────────────┘
+ └───────┬────────┘             (3. POST /api/v1/reserve)
+         │
+         ├──────────────────────────────┐
+         ▼ (同步事务调用)                ▼ (同步事务调用)
+ ┌──────────────────────┐       ┌──────────────────────┐
+ │  reservation_service │       │    order_service     │
+ │ (席位分配 / 段锁排位)│       │ (订单建立 / 支付状态)│
+ └───────┬──────────────┘       └──────────┬───────────┘
+         │                                 │
+         ├─────────────────────────────────┼───────────────────┐
+         ▼ (更新/预占)                     ▼ (更新订单与Outbox)▼ (异步重置/退票)
+ ┌──────────────────────┐       ┌──────────────────────┐       │
+ │     Redis Cluster    │       │     MySQL Shard      │◄──────┘
+ │ (r:seat:{id} 预占图) │       │ (SeatSegment 排他锁) │
+ └──────────────────────┘       │ (outbox_events 写入) │
+                                └──────────┬───────────┘
+                                           │
+                                           ▼ (FOR UPDATE SKIP LOCKED 毫秒级轮询)
+                                ┌──────────────────────┐
+                                │   outbox_publisher   │
+                                │ (发件箱发布进程/协程)│
+                                └──────────┬───────────┘
+                                           │
+                                           ▼ (4. 异步发布事件)
+                                ┌──────────────────────┐
+                                │     Kafka Topic      │
+                                │   (ticket_events)    │
+                                └──────────┬───────────┘
+                                           │
+                                           ▼ (5. 订阅拉取)
+                                ┌──────────────────────┐
+                                │      projector       │ (余票数据只读投影器)
+                                │ (projector.py 消费)  ├───────────┐
+                                └──────────────────────┘           │
+                                                                   ▼ (6. 幂等更新写回)
+                                                        ┌──────────────────────┐
+                                                        │     Redis Cluster    │
+                                                        │ (q:availability 缓存)│
+                                                        └──────────────────────┘
+```
+
+#### ① Web HTTP 骨架分流网关 (`web_server.py`)
+*   **查询侧路由**：绑定 `GET /api/v1/query`，收到客户端请求后，**直接且仅直接**访问 Redis Cache 群中的 `q:availability:{schedule_id}` 哈希快照，不透过任何 SQL 或复杂的逻辑计算。
+*   **占座与交易侧路由**：绑定 `POST /api/v1/reserve`。收到请求后，同步调用 `reservation_service` 启动分布式两阶段原子锁定。
+
+#### ② 核心席位分配与物理锁座服务 (`reservation_service.py`)
+*   网关调用它的 `reserve_ticket()` 方法，首先通过 Pipeline 对车次的 `r:{schedule_id}:seat:{seat_id}` 执行 Redis Lua 脚本预占，阻断 90% 以上的无票冲突；
+*   预占成功的请求，在 **MySQL 事务** 中根据 `SeatSegment` 主键（`seat_id` 升序、`segment_no` 升序）发起 `SELECT ... FOR UPDATE` 排他锁定，物理扣减数据库区间状态；
+*   在同一个本地数据库事务中，写入一条 `OutboxEvent` 事件（状态为 `PENDING`），随后提交事务，通过强一致关系锁保全数据。
+
+#### ③ 订单状态机与超时自动回收服务 (`order_service.py`)
+*   负责订单实体 `Order` 状态的推进。当支付成功时，推进为 `CONFIRMED`；
+*   **超时未支付倒带**：通过定时 Worker 异步轮询或延迟事件发现超时单，在单 MySQL 事务中将订单置为 `CANCELLED`，原子将 `SeatSegment` 区间状态位使用 XOR 逻辑执行反向异或释放，并在同事务中将 `RESERVATION_CANCELLED` 事件写入 Outbox，实现座位物理库存的无缝自愈放回。
+
+#### ④ 高通量事件无冲突发布器 (`outbox_publisher.py`)
+*   作为后台常驻协程（或无状态 Pod 副本）运行，采用 `SELECT * FROM outbox_events WHERE status = 'PENDING' ORDER BY id ASC FOR UPDATE SKIP LOCKED LIMIT 100` 极速拉取；
+*   通过 `SKIP LOCKED` 完美杜绝了多 Publisher 副本轮询时的锁冲突。发布至 Kafka 后，将对应 Outbox 事件标记为 `PROCESSED`（或物理删除），将写库事务与外部消息总线（Kafka）完全解耦。
+
+#### ⑤ 最终一致余票数据投影器 (`projector.py`)
+*   作为 Kafka 事件保序消费者（消费组：`query_projector_group`），专门监听交易或退票事件；
+*   收到事件后，拉取数据库中当前车次最新的物理占座行状态，进行增量区间重算（Aggregated Page Calculation），计算出各起止站（From -> To）的所有最新可售票额数字，批量写入（Projection） Redis 的 `q:availability` 缓存快照中，最终完成 CQRS 读写分离链条的最终一致性闭环。
+
 ---
 
 ## 3. 源码级技术落地规范 (Technical Implementation - L4)
