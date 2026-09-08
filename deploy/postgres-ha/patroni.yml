@@ -28,6 +28,15 @@ bootstrap:
         max_wal_size: 16GB
         min_wal_size: 2GB
         deadlock_timeout: 100ms       # 100ms 快速死锁解锁
+        
+        # ───────────────── 流复制与读写分离核心参数 ─────────────────
+        hot_standby: "on"              # 开启只读备库能力 (确保读写分离可用)
+        hot_standby_feedback: "on"     # 防止主库 Vacuum 清理从库正在查询的死元组，彻底避免只读大屏查询被中断取消
+        max_standby_archive_delay: 30s # 备库应用归档 WAL 的最大延迟时间
+        max_standby_streaming_delay: 30s # 备库应用流复制 WAL 的最大延迟时间
+        wal_receiver_timeout: 60s      # 接收进程连接超时判定
+        max_replication_slots: 10      # 最大流复制槽，防止主库过早清除从库未消费的 WAL
+        
         autovacuum: "on"
         autovacuum_max_workers: 8
         autovacuum_vacuum_scale_factor: 0.05
