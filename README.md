@@ -180,15 +180,58 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 🔌 3. 启动后端交易服务 (Backend API - Port 8000)
+### 🔌 3. 启动后端交易服务 (多语言后端三足鼎立)
 
+本项目提供三套**物理完全等价、共享 100% 相同 API 端点/JSON 载荷、搭载同一套 Redis Lua 二进制段位图预占算法**的高并发后端分配引擎实现。您可以任选其中之一（或全部）在后台拉起，并通过前端监控大屏顶部的下拉菜单，在毫秒级执行动态一键切换调阅：
+
+#### 🐍 方案 A：Python FastAPI 异步微服务 (默认 8000 端口)
 ```bash
 # 启动写模型核心、余票查询及发件箱事务端点
 python -m uvicorn src.app.main:app --host 0.0.0.0 --port 8000 --reload
+# 运行 Python 自动化测试：pytest -v
+```
+
+#### 🐹 方案 B：Go 1.24+ 极高能无锁分配引擎 (默认 8001 端口)
+```bash
+cd src/go-app
+go run .
+# 运行 Go 自动化/高并发碰撞测试：go test -v
+```
+
+#### ⚡ 方案 C：C# .NET 7.0 顶级并发 Minimal API 引擎 (默认 8002 端口)
+```bash
+cd src/csharp-app
+dotnet run
+# 运行 C# xUnit 核心算法测试：cd ../csharp-app.Tests && dotnet test
+```
+
+#### ☕ 方案 D：Java Spring Cloud 并发架构引擎 (默认 8003 端口)
+```bash
+cd src/spring-app
+# 需确保安装了 Maven 与 JDK 17
+mvn spring-boot:run
+# 运行 Java 单元测试：mvn test
+```
+
+#### 🦀 方案 E：Rust Axum 极速异步安全引擎 (默认 8004 端口)
+```bash
+cd src/rust-app
+# 需确保安装了 Rust/Cargo 及 PostgreSQL/Redis 依赖环境
+cargo run --release
 ```
 
 ### 🖥️ 4. 启动独立前端网页服务 (Frontend Web App - Port 8080)
 
+前端网页应用（单页大屏）已经彻底**剥离为独立的、可物理隔离部署的 Nginx 组件**。您现在拥有两种极佳的前端独立托管启动方案：
+
+#### 🐳 方案 A：一键式云原生分布式统一部署 (推荐)
+直接通过 Docker Compose，系统会自动在 `./src/web` 目录下进行高能 Nginx 独立镜像编译，并物理隔离运行于 8080 端口，不再掺杂任何 Python 后端逻辑：
+```bash
+docker compose up -d --build
+```
+
+#### 🐍 方案 B：本地 Python 静态虚拟服务 (开发兼容)
+若仅在本地执行单机调试，亦可保持 `src/app` 源码完全不变，沿用原 Python 轻量级服务托管 `src/web/` 静态目录：
 ```bash
 # 启动专门用于静态资产和单页仪表盘托管 of Web 服务器
 python -m uvicorn src.app.web_server:app --host 0.0.0.0 --port 8080 --reload
@@ -226,5 +269,8 @@ _AI 与人类工程师在 12306 这一千古难题上的这次极简交锋，证
 👉 **[点击阅读：《12306 SRE 极限过载稳定性保障：多级限流、熔断降级与动态排队白皮书》](./docs/05_08_12306_SRE_Rate_Limiting_Circuit_Breaker_and_Dynamic_Queuing_Playbook.md)**
 👉 **[点击阅读：《12306 生产级系统高可用 SLA 估算与数学论证白皮书》](./docs/05_09_12306_High_Availability_SLA_Estimation_and_Mathematical_Proof.md)**
 👉 **[点击阅读：《12306 生产级 SRE 组织架构、On-Call 响应与混沌工程演练白皮书》](./docs/05_10_12306_SRE_Team_Building_and_OnCall_Operations_Manual.md)**
+👉 **[点击阅读：《12306 生产级 Prometheus & Grafana 监控与智能告警架构设计方案》](./docs/05_11_12306_SRE_Prometheus_Grafana_Monitoring_and_Alerting_Architecture.md)**
+👉 **[点击阅读：《12306 缓存击穿、穿透与雪崩风险评估与极致自愈设计白皮书》](./docs/05_12_12306_SRE_Cache_Breakdown_Penetration_Avalanche_Mitigation_Whitepaper.md)**
+👉 **[点击阅读：《12306 极速缓存效率优化与 Redis 单点故障（SPOF）高可用平稳降级设计白皮书》](./docs/05_13_12306_SRE_Cache_High_Efficiency_and_Anti_SPOF_Multi_Tier_Degradation_Architecture.md)**
 
 这些设计与白皮书详述了如何通过 **“CDN 智能边缘预热”、“排队削峰网关”、“MySQL 五百一十二等份细胞化分表（Cellular Sharding）” 以及 “CDC 增量解耦”** 的物理堆叠，配合高主频 Redis 节点、512 主从 MySQL SSD 磁盘矩阵、跨中心光环线的精确配置计算，以及云原生 HPA/KEDA 自动弹性缩容的年度降本 ROI 核算，在代码微观骨架不变的前提下，构建出承载地狱级峰值且极具财务性价比的数字长城。
