@@ -324,4 +324,74 @@ Feature: 12306 高并发区间票务分配系统核心功能
 
 ### 4.3 现场 curl API 冒烟撞击脚本
 
-详情请参考 [docs/12306*Python_MVP*技术实现手册.md](./12306_Python_MVP_技术实现手册.md) 的“API 端点现场调用与冒烟调试指南”。通过调用本系统的 `main.py` Web 网关，您可以直接用 `curl` 还原整套高并发预占、扣款和事件异步消费一致性。
+当本地分布式基础设施及 Python 服务启动后，可通过在系统终端（如 macOS/Linux Terminals）依次运行以下 6 个原子的 `curl` 命令，全量复现“一车多站、区间预占、本地事务 Outbox 写入、Kafka 事件分发与 Projector 最终一致投影”的售票全生命周期闭环：
+
+#### ⚙️ 第一步：TRS 局端权威车次导入与预热 (POST)
+模拟铁路局端 TRS 平台，向 12306 分配导入 `G888` 次列车的物理车清册、经停时刻（北京->天津->上海，3个经停站，产生2个可售物理区间）及席位清册。导入成功后，系统会单事务写入底层数据库多表并**自动触发 Projector 执行 Redis 读缓存位图暖身预热**：
+```bash
+curl -X POST http://localhost:8000/api/v1/ops/trs/import-schedule \
+  -H "Content-Type: application/json" \
+  -d '{
+    "train_code": "G888",
+    "service_date": "2026-10-01",
+    "stations": [
+      {"name": "北京", "sequence": 1},
+      {"name": "天津", "sequence": 2},
+      {"name": "上海", "sequence": 3}
+    ],
+    "seats": [
+      {"carriage_no": "04", "seat_no": "04F", "seat_class": "BUSINESS"}
+    ]
+  }'
+```
+
+#### 🔍 第二步：余票冷查询自动回源重算 (GET)
+查询 `G888`（假设分配的 `schedule_id` 为 1）从【北京 (Seq 1) ──► 上海 (Seq 3)】的商务座可用余票。若缓存意外丢失，引擎会触发 **Cache Miss 自动回源暖身**，重算底层区间状态并覆盖 Redis 快照：
+```bash
+curl -X GET "http://localhost:8000/api/v1/query?schedule_id=1&from_station_seq=1&to_station_seq=3&seat_class=BUSINESS"
+```
+
+#### 🎟️ 第三步：席位位图原子预占锁定 (POST)
+发起高并发抢票请求。购买【北京 (Seq 1) ──► 天津 (Seq 2)】的商务座 1 张。服务层将调用 **Redis Lua 脚本** 锁定对应二进制位图（bit 0），随后将扣减落入 MySQL 物理事务行锁中，并原子产生 Pending Outbox 消息：
+```bash
+curl -X POST http://localhost:8000/api/v1/reserve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "REQ_SMOKE_RESERVE_01",
+    "schedule_id": 1,
+    "from_station_seq": 1,
+    "to_station_seq": 2,
+    "seat_class": "BUSINESS",
+    "passenger_ids": ["PSG_SMOKE_USER_01"]
+  }'
+```
+*响应体将返回一个专属的锁座标识 `"reservation_id"`，记为 `$RES_ID`。*
+
+#### 📝 第四步：同步创建待支付交易订单 (POST)
+传入第三步获取的锁座标识，在 MySQL 细胞分片内同步建立 Orders 支付跟踪记录：
+```bash
+curl -X POST http://localhost:8000/api/v1/order \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "REQ_SMOKE_ORDER_01",
+    "reservation_id": "请替换为第三步返回的reservation_id",
+    "amount": 288.50
+  }'
+```
+*响应体将返回物理订单标识 `"order_id"`，记为 `$ORD_ID`。*
+
+#### 💳 第五步：模拟订单支付核销与异步投影 (POST)
+支付该订单，驱动订单状态机流转。支付事务在落盘的同时，会在同一本地事务里将 PENDING 状态的 `ORDER_PAID` 事件写入 Outbox，后台 **`outbox_publisher`** 毫秒级拾取并发布至 Kafka，最终由 **`projector`** 订阅重算，使余票读缓存完成强最终一致：
+```bash
+curl -X POST http://localhost:8000/api/v1/pay \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_id": "请替换为第四步返回的order_id"
+  }'
+```
+
+#### 🩺 第六步：SRE 数据库与缓存可用性健康嗅探 (GET)
+在运维侧，调用内置探针，由 FastAPI 同步在连接池中执行 MySQL 的心跳 `SELECT 1` 和 Redis 的 `PING-PONG` 可用性握手，秒级感知基础设施存活性：
+```bash
+curl -X GET http://localhost:8000/api/v1/ops/health
+```
