@@ -1,0 +1,176 @@
+version: '3.8'
+
+services:
+  # ───────────────────────────────────────────────────────────────────────────
+  # etcd Consensus Cluster (3 Nodes)
+  # DCS 分布式协调组件，用于强一致性选主与 TTL 心跳判定
+  # ───────────────────────────────────────────────────────────────────────────
+  etcd1:
+    image: bitnami/etcd:3.5
+    container_name: etcd1
+    environment:
+      - ETCD_NAME=etcd1
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-token
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd1:2380
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd1:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ALLOW_NONE_AUTHENTICATION=yes
+    volumes:
+      - etcd1_data:/bitnami/etcd/data
+    ports:
+      - "2379:2379"
+
+  etcd2:
+    image: bitnami/etcd:3.5
+    container_name: etcd2
+    environment:
+      - ETCD_NAME=etcd2
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-token
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd2:2380
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd2:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ALLOW_NONE_AUTHENTICATION=yes
+    volumes:
+      - etcd2_data:/bitnami/etcd/data
+
+  etcd3:
+    image: bitnami/etcd:3.5
+    container_name: etcd3
+    environment:
+      - ETCD_NAME=etcd3
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster-token
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd3:2380
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd3:2379
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ALLOW_NONE_AUTHENTICATION=yes
+    volumes:
+      - etcd3_data:/bitnami/etcd/data
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Patroni Managed PostgreSQL Nodes (3 Nodes HA Cluster)
+  # ───────────────────────────────────────────────────────────────────────────
+  pg-node1:
+    image: registry.cn-hangzhou.aliyuncies.com/sre-images/patroni:15-3.0
+    container_name: pg-node1
+    hostname: pg-node1
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
+    environment:
+      - PATRONI_NAME=pg-node1
+      - PATRONI_SCOPE=ticketing-ha-cluster
+      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=pg-node1:5432
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=pg-node1:8008
+      - PATRONI_SUPERUSER_PASSWORD=postgres
+      - PATRONI_REPLICATION_PASSWORD=replicator
+    volumes:
+      - ./patroni.yml:/opt/patroni/patroni.yml:ro
+      - pg_node1_data:/data/patroni
+    command: ["patroni", "/opt/patroni/patroni.yml"]
+
+  pg-node2:
+    image: registry.cn-hangzhou.aliyuncies.com/sre-images/patroni:15-3.0
+    container_name: pg-node2
+    hostname: pg-node2
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
+    environment:
+      - PATRONI_NAME=pg-node2
+      - PATRONI_SCOPE=ticketing-ha-cluster
+      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=pg-node2:5432
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=pg-node2:8008
+      - PATRONI_SUPERUSER_PASSWORD=postgres
+      - PATRONI_REPLICATION_PASSWORD=replicator
+    volumes:
+      - ./patroni.yml:/opt/patroni/patroni.yml:ro
+      - pg_node2_data:/data/patroni
+    command: ["patroni", "/opt/patroni/patroni.yml"]
+
+  pg-node3:
+    image: registry.cn-hangzhou.aliyuncies.com/sre-images/patroni:15-3.0
+    container_name: pg-node3
+    hostname: pg-node3
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
+    environment:
+      - PATRONI_NAME=pg-node3
+      - PATRONI_SCOPE=ticketing-ha-cluster
+      - PATRONI_ETCD3_HOSTS=etcd1:2379,etcd2:2379,etcd3:2379
+      - PATRONI_POSTGRESQL_LISTEN=0.0.0.0:5432
+      - PATRONI_POSTGRESQL_CONNECT_ADDRESS=pg-node3:5432
+      - PATRONI_RESTAPI_LISTEN=0.0.0.0:8008
+      - PATRONI_RESTAPI_CONNECT_ADDRESS=pg-node3:8008
+      - PATRONI_SUPERUSER_PASSWORD=postgres
+      - PATRONI_REPLICATION_PASSWORD=replicator
+    volumes:
+      - ./patroni.yml:/opt/patroni/patroni.yml:ro
+      - pg_node3_data:/data/patroni
+    command: ["patroni", "/opt/patroni/patroni.yml"]
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # HAProxy Load Balancer
+  # 根据 Patroni 8008 端口的 REST API HTTP 健康状态实现读写秒级精确切流
+  # ───────────────────────────────────────────────────────────────────────────
+  haproxy:
+    image: haproxy:2.6-alpine
+    container_name: pg-haproxy
+    depends_on:
+      - pg-node1
+      - pg-node2
+      - pg-node3
+    ports:
+      - "5000:5000" # 写池入口 (指向 Master)
+      - "5001:5001" # 读池入口 (指向 Replicas)
+      - "7000:7000" # HAProxy 状态监控看板面板
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # PgBouncer Connection Pooler (Sits in front of HAProxy)
+  # 用于万级高并发微服务连接池削峰与物理连接平滑复用
+  # ───────────────────────────────────────────────────────────────────────────
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: pg-bouncer
+    depends_on:
+      - haproxy
+    ports:
+      - "6432:6432"
+    environment:
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_HOST=haproxy
+      - DB_PORT=5000 # 默认指向 HAProxy 的写端口
+      - MAX_CLIENT_CONN=10000
+      - DEFAULT_POOL_SIZE=50
+      - POOL_MODE=transaction # 事务级连接池复用模式 (完美契合 12306)
+    volumes:
+      - ./pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+
+volumes:
+  etcd1_data:
+  etcd2_data:
+  etcd3_data:
+  pg_node1_data:
+  pg_node2_data:
+  pg_node3_data:

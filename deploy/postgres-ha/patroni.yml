@@ -1,0 +1,61 @@
+# 🌌 Patroni HA Cluster Template Configuration Specification
+scope: ticketing-ha-cluster
+namespace: /service
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bootstrap Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576 # 最大允许的主从落后 LSN 字节数 (1MB)，超过不允许 failover 保证高一致
+    synchronous_mode: true           # 开启强一致性流复制选主模式 (Zero RPO 绝对强防重/防丢票)
+    
+    # postgresql.conf 核心参数重载
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        shared_buffers: 16GB
+        work_mem: 64MB
+        maintenance_work_mem: 2GB
+        effective_cache_size: 48GB
+        wal_level: replica
+        synchronous_commit: "off"      # WAL 异步组提交 (高吞吐)
+        checkpoint_completion_target: 0.9
+        max_wal_size: 16GB
+        min_wal_size: 2GB
+        deadlock_timeout: 100ms       # 100ms 快速死锁解锁
+        autovacuum: "on"
+        autovacuum_max_workers: 8
+        autovacuum_vacuum_scale_factor: 0.05
+        autovacuum_vacuum_cost_limit: 2000
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+
+  pg_hba:
+    - host replication replicator 0.0.0.0/0 md5
+    - host all all 0.0.0.0/0 md5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REST API 端口（HAProxy 通过此端点判定谁是 Master/Replica）
+# ─────────────────────────────────────────────────────────────────────────────
+restapi:
+  listen: 0.0.0.0:8008
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PostgreSQL Engine Process
+# ─────────────────────────────────────────────────────────────────────────────
+postgresql:
+  listen: 0.0.0.0:5432
+  authentication:
+    superuser:
+      username: postgres
+      password: postgres
+    replication:
+      username: replicator
+      password: replicator
