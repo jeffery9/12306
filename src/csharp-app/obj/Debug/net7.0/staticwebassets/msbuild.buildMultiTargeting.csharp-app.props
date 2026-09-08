@@ -1,3 +1,0 @@
-﻿<Project>
-  <Import Project="../build/csharp-app.props" />
-</Project>

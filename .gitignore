@@ -40,3 +40,7 @@ Thumbs.db
 # 5. SDD SDLC Temporary Progress Ledgers
 .superpowers/
 progress.md
+
+# 6. .NET Build & Cache (DO NOT TRACK)
+[Bb]in/
+[Oo]bj/
