@@ -138,8 +138,8 @@ $$TPS_{shard} = \frac{1,000,000 \text{ TPS}}{512 \text{ Shards}} \approx 1,953 \
 $$IOPS_{write\_shard} = TPS_{shard} \times \left( \frac{2}{G} + Pages_{modified} \times 2 \right) = 1,953 \times (0.2 + 5 \times 2) \approx 19,920 \text{ IOPS/Shard}$$
 
 *   **安全冗余系数**：引入 $S = 2.0$ 的 SRE 突发流量冗余系数，以抵御数据库物理 Checkpoint 时的突发 I/O 潮汐。
-*   **单分片目标写入 IOPS 需求**：$$19,920 \times 2.0 = 39,840 \approx 40,000 \text{ IOPS}$$
-*   **全网 512 分片总写入 IOPS 需求**：$$40,000 \text{ IOPS} \times 512 \approx 20,480,000 \text{ IOPS}$$ (超 2000 万全局 IOPS)。
+*   **单分片目标写入 IOPS 需求**：$19,920 \times 2.0 = 39,840 \approx 40,000 \text{ IOPS}$
+*   **全网 512 分片总写入 IOPS 需求**：$40,000 \text{ IOPS} \times 512 \approx 20,480,000 \text{ IOPS}$ (超 2000 万全局 IOPS)。
 
 #### ③ 峰值写 I/O 吞吐量（Throughput）估算模型
 InnoDB 标准数据页（Page Size）大小为 $16 \text{ KB}$。一个事务平均修改 5 个物理数据页，双写机制下，物理总写入量计算如下：
@@ -151,8 +151,8 @@ $$Size_{write\_tx} = (Redo + Binlog \approx 2 \text{ KB}) + (5 \text{ Pages} \ti
 $$Throughput_{write\_shard} = TPS_{shard} \times Size_{write\_tx} = 1,953 \text{ TPS} \times 162 \text{ KB} \approx 316.4 \text{ MB/s (单分片)}$$
 
 *   **安全冗余系数**：同样引入 $S = 2.0$ 的弹性冗余。
-*   **单分片目标物理写吞吐需求**：$$316.4 \text{ MB/s} \times 2.0 = 632.8 \text{ MB/s} \approx 640 \text{ MB/s}$$
-*   **全网 512 分片总写吞吐带宽需求**：$$640 \text{ MB/s} \times 512 \approx 327.68 \text{ GB/s}$$ (极其暴力的全局有状态落盘物理带宽)。
+*   **单分片目标物理写吞吐需求**：$316.4 \text{ MB/s} \times 2.0 = 632.8 \text{ MB/s} \approx 640 \text{ MB/s}$
+*   **全网 512 分片总写吞吐带宽需求**：$640 \text{ MB/s} \times 512 \approx 327.68 \text{ GB/s}$ (极其暴力的全局有状态落盘物理带宽)。
 
 #### ④ 存储硬件（PCIe NVMe SSD）物理匹配论证
 对标我们在 **`docs/05_01`（本地 IDC Spine-Leaf 网络架构）** 中为 512 组 MySQL 主备节点配置的顶级存储选型：
@@ -165,7 +165,7 @@ $$Throughput_{write\_shard} = TPS_{shard} \times Size_{write\_tx} = 1,953 \text{
 
 ### E. 基于 PostgreSQL 集群的高并发 I/O 需求估算方案 (TeX 公式版)
 
-本方案针对采用 **PostgreSQL 高可用集群（含主从物理复制与分片）** 部署下的有状态存储，建立定量的物理 I/O 估算数学模型。本篇全面采用标准 $\text{\LaTeX}$（TeX）公式进行学术级推导，深度剖析 PostgreSQL 独有的多版本并发控制（MVCC）写放大、全页写入（Full Page Writes - FPW）以及自动垃圾回收（Autovacuum）机制对磁盘 IOPS 和吞吐带宽的物理吞噬，为底层存储硬件选型提供最硬核的定量支撑。
+本方案针对采用 **PostgreSQL 高可用集群（含主从物理复制与分片）** 部署下的有状态存储，建立定量的物理 I/O 估算数学模型。本篇全面采用标准 TeX 公式进行学术级推导，深度剖析 PostgreSQL 独有的多版本并发控制（MVCC）写放大、全页写入（Full Page Writes - FPW）以及自动垃圾回收（Autovacuum）机制对磁盘 IOPS 和吞吐带宽的物理吞噬，为底层存储硬件选型提供最硬核的定量支撑。
 
 #### ① 单分片写吞吐率计算
 单个 PostgreSQL 分片在峰值时分配承载的事务率 $TPS_{shard}$ 如下：
