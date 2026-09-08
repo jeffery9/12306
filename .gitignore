@@ -1,0 +1,42 @@
+# ====================================================
+# 🌌 12306 Next-Gen CQRS Ticketing System Git Ignore
+# Standard Python & SRE Sentry Environment Filter
+# ====================================================
+
+# 1. Python Virtual Environments (DO NOT TRACK)
+venv/
+.venv/
+env/
+ENV/
+lib/
+bin/
+include/
+pyvenv.cfg
+
+# 2. Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 3. Test & Coverage Outputs
+.pytest_cache/
+.coverage
+htmlcov/
+.anyio_cache/
+.tox/
+
+# 4. IDEs & Editors Configurations
+.idea/
+.vscode/
+.obsidian/
+*.swp
+*.swo
+.DS_Store
+.DS_Store?
+ehthumbs.db
+Thumbs.db
+
+# 5. SDD SDLC Temporary Progress Ledgers
+.superpowers/
+progress.md
