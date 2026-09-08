@@ -167,6 +167,62 @@ services:
     volumes:
       - ./pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
 
+  # ───────────────────────────────────────────────────────────────────────────
+  # Prometheus Scraper Instance (Port 9090)
+  # ───────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: pg-prometheus
+    depends_on:
+      - pgbouncer
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Grafana Visualization Dashboard (Port 3000 - Creds: admin/admin)
+  # ───────────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: pg-grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Postgres Exporters (One per PostgreSQL HA Node on Port 9187)
+  # ───────────────────────────────────────────────────────────────────────────
+  pg-exporter-node1:
+    image: prometheuscommunity/postgres-exporter:v0.12.1
+    container_name: pg-exporter-node1
+    depends_on:
+      - pg-node1
+    environment:
+      - DATA_SOURCE_NAME=postgresql://postgres:postgres@pg-node1:5432/postgres?sslmode=disable
+
+  pg-exporter-node2:
+    image: prometheuscommunity/postgres-exporter:v0.12.1
+    container_name: pg-exporter-node2
+    depends_on:
+      - pg-node2
+    environment:
+      - DATA_SOURCE_NAME=postgresql://postgres:postgres@pg-node2:5432/postgres?sslmode=disable
+
+  pg-exporter-node3:
+    image: prometheuscommunity/postgres-exporter:v0.12.1
+    container_name: pg-exporter-node3
+    depends_on:
+      - pg-node3
+    environment:
+      - DATA_SOURCE_NAME=postgresql://postgres:postgres@pg-node3:5432/postgres?sslmode=disable
+
 volumes:
   etcd1_data:
   etcd2_data:
@@ -174,3 +230,5 @@ volumes:
   pg_node1_data:
   pg_node2_data:
   pg_node3_data:
+  prometheus_data:
+  grafana_data:

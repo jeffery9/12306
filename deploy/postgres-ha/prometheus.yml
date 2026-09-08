@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1. HAProxy Load Balancer Metrics
+  # 监控 VIP 读写分发状态、会话连接数与 HTTP 错误率
+  # ───────────────────────────────────────────────────────────────────────────
+  - job_name: 'haproxy'
+    static_configs:
+      - targets: ['haproxy:7000']
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2. etcd DCS Consensus Metrics
+  # 监控 3-Node 分布式协调选举集群的多数派共识与提交延迟
+  # ───────────────────────────────────────────────────────────────────────────
+  - job_name: 'etcd'
+    static_configs:
+      - targets:
+          - 'etcd1:2379'
+          - 'etcd2:2379'
+          - 'etcd3:2379'
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 3. PostgreSQL Database Metrics (Scraped via Postgres Exporters)
+  # 监控核心 Master/Replica 节点的 TPS、流复制延迟、死锁次数、锁队列和 Active Connections
+  # ───────────────────────────────────────────────────────────────────────────
+  - job_name: 'postgres'
+    static_configs:
+      - targets:
+          - 'pg-exporter-node1:9187'
+          - 'pg-exporter-node2:9187'
+          - 'pg-exporter-node3:9187'
