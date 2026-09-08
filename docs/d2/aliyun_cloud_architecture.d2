@@ -1,0 +1,51 @@
+# 阿里云全托管云原生部署与弹性扩容拓扑
+direction: down
+
+cdn: "阿里云全网边缘 CDN" {
+  style.fill: "#f8f9fa"
+  static: "静态余票缓存拦截 (90%)"
+  ddos: "动态高防清洗防护"
+  
+  static -> ddos: "穿透流控"
+}
+
+alb: "应用型负载均衡 ALB" {
+  style.fill: "#fff3bf"
+}
+
+subgraph_ack: "托管容器服务 ACK Pro / Serverless ACK" {
+  style.fill: "#eef2ff"
+  
+  ecs: "常态固定 ECS 节点池\n(g8i.4xlarge 物理机)" {
+    style.fill: "#c7d2fe"
+  }
+  eci: "弹性虚拟节点池 ECI\n(Serverless 瞬时无上限扩容)" {
+    style.fill: "#818cf8"
+  }
+  
+  ecs -> eci: "触发弹性伸缩\n(CPU/Lag 阀值)" {
+    style.stroke: "#4f46e5"
+    style.stroke-dash: 4
+  }
+}
+
+subgraph_cloud_storage: "阿里云托管有状态存储中心" {
+  style.fill: "#ecfdf5"
+  
+  tair: "云数据库 Redis 企业版 Tair\n(分布式 Lua / 承载位掩码预占)" {
+    style.fill: "#a7f3d0"
+  }
+  polardbx: "云原生分布式数据库 PolarDB-X\n(分布式 MySQL Sharding)" {
+    style.fill: "#a7f3d0"
+  }
+}
+
+cdn.ddos -> alb: "公网穿透流量" { style.stroke-width: 2 }
+alb -> subgraph_ack.ecs: "VPC 专有网络 (< 1ms)" { style.stroke-width: 2 }
+alb -> subgraph_ack.eci: "VPC 专有网络 (< 1ms)" { style.stroke-width: 2 }
+
+subgraph_ack.ecs -> subgraph_cloud_storage.tair: "Lua 原子预占" { style.stroke: "#059669" }
+subgraph_ack.eci -> subgraph_cloud_storage.tair: "Lua 原子预占" { style.stroke: "#059669" }
+
+subgraph_ack.ecs -> subgraph_cloud_storage.polardbx: "事务最终落盘" { style.stroke: "#059669"; style.stroke-dash: 3 }
+subgraph_ack.eci -> subgraph_cloud_storage.polardbx: "事务最终落盘" { style.stroke: "#059669"; style.stroke-dash: 3 }

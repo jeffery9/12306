@@ -1,0 +1,58 @@
+# 核心网络逻辑拓扑与安全域隔离
+direction: down
+
+bgp: "100Gbps BGP 运营商多线骨干网" {
+  style.fill: "#f8f9fa"
+}
+
+dmz: "边缘防护区 (DMZ Zone)" {
+  style.fill: "#fee2e2"
+  border_leaf: "Border Leaf 边界交换机"
+  antiddos: "Anti-DDoS 高防清洗网关"
+  f5: "F5 BIG-IP 应用交付网关"
+  
+  border_leaf -> antiddos -> f5: "Anycast 智能流控"
+}
+
+fw1: "核心隔离防火墙 NGFW-A" { style.fill: "#fca5a5" }
+fw2: "核心隔离防火墙 NGFW-B" { style.fill: "#fca5a5" }
+
+subgraph_compute: "核心无状态计算安全域 (Core Compute Zone)" {
+  style.fill: "#eef2ff"
+  
+  ingress: "Nginx Ingress 网关 Pods (400+)"
+  web: "ticketing-web 业务计算 Pods (3000+)"
+  kafka: "Kafka MQ 高并发中枢 (32 Brokers)"
+  outbox: "outbox-publisher 异步发件箱 Pods"
+  trssync: "trs-sync 局端同步路由高可用节点"
+  
+  ingress -> web -> outbox -> kafka
+  trssync -> web: "同步状态" { style.stroke-dash: 3 }
+}
+
+subgraph_db: "核心有状态数据安全域 (Core Database Zone)" {
+  style.fill: "#ecfdf5"
+  
+  redis: "Redis Cluster 段锁缓存裸机\n(512台)"
+  mysql: "MySQL MGR 细胞数据库物理机\n(1024台)"
+  ck: "ClickHouse 历史离线审计落盘节点"
+}
+
+subgraph_oob: "带外隔离监控管理域 (OOB Management Zone)" {
+  style.fill: "#fef3c7"
+  
+  oob_hw: "IPMI / iLO 物理电源硬控制柜"
+  console: "Console 终端终端服务器"
+  telemetry: "Prometheus 遥测网关 & Grafana"
+  keda: "KEDA 伸缩控制中枢"
+}
+
+bgp -> dmz.border_leaf
+dmz.f5 -> fw1
+dmz.f5 -> fw2
+
+fw1 -> subgraph_compute.ingress
+fw2 -> subgraph_db.redis
+
+subgraph_compute -> subgraph_oob: "带外隔离千兆网" { style.stroke-dash: 3 }
+subgraph_db -> subgraph_oob: "带外隔离千兆网" { style.stroke-dash: 3 }

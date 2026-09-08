@@ -1,0 +1,40 @@
+# 多 ISP 联通/电信/移动三线 BGP 对称路由
+direction: down
+
+isp: "运营商 BGP 骨干网络" {
+  style.fill: "#f8f9fa"
+  telecom: "中国电信\nAS4134" { style.fill: "#c0e0ff" }
+  unicom: "中国联通\nAS4808" { style.fill: "#ffe0c0" }
+  mobile: "中国移动\nAS9808" { style.fill: "#c0ffc0" }
+}
+
+routers: "DCI 边缘边界路由器" {
+  style.fill: "#f1f5f9"
+  r1: "Border-R1\n(Cisco NCS 5500)"
+  r2: "Border-R2\n(Cisco NCS 5500)"
+  r3: "Border-R3\n(Cisco NCS 5500)"
+}
+
+security: "核心安全洗消与策略路由区" {
+  style.fill: "#fff5f5"
+  cleaner: "Anti-DDoS 流量清洗集群\n(Anycast 流量代播)"
+  firewall: "下一代高防防火墙 NGFW\n(双活热备/状态表同步)"
+}
+
+fabric: "Spine-Leaf 内网交换 Fabric" {
+  style.fill: "#f5f3ff"
+  spine: "Spine Core Group"
+}
+
+# Physical Links
+isp.telecom <-> routers.r1: "100G LC 物理专线" { style.stroke: "#0066cc"; style.stroke-width: 2 }
+isp.unicom <-> routers.r2: "100G LC 物理专线" { style.stroke: "#ff6600"; style.stroke-width: 2 }
+isp.mobile <-> routers.r3: "100G LC 物理专线" { style.stroke: "#009933"; style.stroke-width: 2 }
+
+# Anycast Routing to Cleaner
+routers.r1 -> security.cleaner: "VLAN 2100 (电信流)"
+routers.r2 -> security.cleaner: "VLAN 2200 (联通流)"
+routers.r3 -> security.cleaner: "VLAN 2300 (移动流)"
+
+security.cleaner -> security.firewall: "安全数据清洗流" { style.stroke-width: 2 }
+security.firewall -> fabric.spine: "内网 eBGP 宣告" { style.stroke-width: 2; style.stroke-dash: 3 }

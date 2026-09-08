@@ -1,0 +1,31 @@
+direction: right
+
+client: "客户端\n(Client Vue)" {
+  style.fill: "#f8f9fa"
+}
+gateway: "ticketing-web\nAPI 网关" {
+  style.fill: "#e7f5ff"
+}
+kafka: "Kafka 分布式消息大坝\n(Topic: .reservation.queue)" {
+  style.fill: "#fffdeb"
+  style.stroke: "#f59f00"
+  style.stroke-width: 2
+}
+projector: "projector\n顺序消费服务" {
+  style.fill: "#e5dbff"
+}
+db: "MySQL MGR / Redis\n物理持久层" {
+  style.fill: "#ebfbee"
+  style.stroke: "#2b8a3e"
+}
+
+client -> gateway: "1. 购票写请求\n(QPS > 5,000 穿透)"
+gateway -> client: "2. 返回 HTTP 202\n(排队凭证 + Position + 3.0s 等待)" {
+  style.stroke: "#40c057"
+}
+gateway -> kafka: "3. 异步写入订单流水消息"
+kafka -> projector: "4. 顺序串行无死锁消费"
+projector -> db: "5. 席位预占及强事务物理落盘"
+client -> db: "6. 前端秒级 Ajax / WebSocket 轮询\n(状态变更为 SUCCESS_HELD ➔ 唤醒支付)" {
+  style.stroke-dash: 5
+}

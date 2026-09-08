@@ -1,0 +1,56 @@
+# 12306 自有数据中心物理部署拓扑
+direction: down
+
+bgp: "100Gbps BGP 骨干网" {
+  style.fill: "#f8f9fa"
+  style.stroke: "#333333"
+}
+
+lb: "双 Active 负载均衡" {
+  style.fill: "#fff3bf"
+  haproxy: "HAProxy / Keepalived 阵列" {
+    style.fill: "#ffe066"
+  }
+}
+
+subgraph_compute: "K8s 无状态计算裸机集群" {
+  style.fill: "#eef2ff"
+  
+  web: "ticketing-web API Pods\n(1000+)" {
+    style.fill: "#c7d2fe"
+  }
+  outbox: "outbox-publisher Pods\n(64 Cores)" {
+    style.fill: "#c7d2fe"
+  }
+  kafka: "Kafka MQ Broker\n(32 Nodes)" {
+    style.fill: "#c7d2fe"
+  }
+  
+  web -> outbox: "Local Socket / IPC" { style.stroke: "#4f46e5" }
+  outbox -> kafka: "10万兆网络" { style.stroke: "#4f46e5" }
+}
+
+subgraph_stateful: "核心交易有状态物理机房" {
+  style.fill: "#ecfdf5"
+  
+  redis: "Redis Cluster 缓存裸机\n(256主 + 256从)" {
+    style.fill: "#a7f3d0"
+  }
+  mysql: "MySQL MGR 数据库细胞分片\n(512物理分片)" {
+    style.fill: "#a7f3d0"
+  }
+}
+
+bgp -> lb.haproxy: "100G LC 光纤" { style.stroke-width: 3 }
+lb.haproxy -> subgraph_compute.web: "10万兆交换网" { style.stroke-width: 2 }
+lb.haproxy -> subgraph_stateful.redis: "10万兆交换网" { style.stroke-width: 2 }
+
+subgraph_compute.web -> subgraph_stateful.redis: "极速段位锁预占" {
+  style.stroke: "#059669"
+  style.stroke-width: 2
+}
+subgraph_compute.kafka -> subgraph_stateful.mysql: "CDC 异步事件投影落盘" {
+  style.stroke: "#059669"
+  style.stroke-width: 2
+  style.stroke-dash: 3
+}

@@ -1,0 +1,67 @@
+# 12306 本地数据中心 42U 标准机柜物理 RU 空间布局
+direction: down
+
+cabinet: "42U 生产级标准物理机柜 (Cabinet RU Layout Grid)" {
+  style.fill: "#f1f3f5"
+  style.stroke: "#212529"
+  style.stroke-width: 3
+
+  # U42 & U41: 汇聚配线
+  u42: "U42: 100G 光纤配线架 [1U]\n(Port 01-48 - Spine 骨干直连)" { style.fill: "#ced4da" }
+  u41: "U41: 100G 光纤配线架 [1U]\n(Port 49-96 - Spine 骨干直连)" { style.fill: "#ced4da" }
+
+  # U40 & U39: 网络交换
+  u40: "U40: Arista 7050SX3 TOR 交换机 [1U]\n(Active-A, 100G 上联/25G 下联)" { style.fill: "#ffc9c9" }
+  u39: "U39: Arista 7050SX3 TOR 交换机 [1U]\n(Active-B, 100G 上联/25G 下联)" { style.fill: "#ffc9c9" }
+
+  # U31 至 U38: Compute Block A (4台 2U 无状态计算)
+  u37_u38: "U37-U38: API 无状态计算服务器-1 [2U]\n(ticketing-web | Dual AMD 9654 | 768G)" { style.fill: "#e7f5ff" }
+  u35_u36: "U35-U36: API 无状态计算服务器-2 [2U]\n(ticketing-web | Dual AMD 9654 | 768G)" { style.fill: "#e7f5ff" }
+  u33_u34: "U33-U34: API 无状态计算服务器-3 [2U]\n(ticketing-web | Dual AMD 9654 | 768G)" { style.fill: "#e7f5ff" }
+  u31_u32: "U31-U32: API 无状态计算服务器-4 [2U]\n(ticketing-web | Dual AMD 9654 | 768G)" { style.fill: "#e7f5ff" }
+
+  # U23 至 U30: Compute Block B (4台 2U 无状态计算)
+  u29_u30: "U29-U30: API 无状态计算服务器-5 [2U]\n(ticketing-web | Dual AMD 9654 | 768G)" { style.fill: "#e7f5ff" }
+  u27_u28: "U27-U28: API 无状态计算服务器-6 [2U]\n(ticketing-web | Dual AMD 9654 | 768G)" { style.fill: "#e7f5ff" }
+  u25_u26: "U25-U26: API 无状态计算服务器-7 [2U]\n(ticketing-web | Dual AMD 9654 | 768G)" { style.fill: "#e7f5ff" }
+  u23_u24: "U23-U24: API 无状态计算服务器-8 [2U]\n(ticketing-web | Dual AMD 9654 | 768G)" { style.fill: "#e7f5ff" }
+
+  # U15 至 U22: Redis Cluster (4台 2U 缓存有状态裸机)
+  u21_u22: "U21-U22: Redis Cluster 缓存主节点 [2U]\n(Segment Lock-A | Xeon 6434 @ 3.7GHz)" { style.fill: "#ebfbee" }
+  u19_u20: "U19-U20: Redis Cluster 缓存主节点 [2U]\n(Segment Lock-B | Xeon 6434 @ 3.7GHz)" { style.fill: "#ebfbee" }
+  u17_u18: "U17-U18: Redis Cluster 缓存副本节点 [2U]\n(Segment Lock-A' | Xeon 6434 @ 3.7GHz)" { style.fill: "#ebfbee" }
+  u15_u16: "U15-U16: Redis Cluster 缓存副本节点 [2U]\n(Segment Lock-B' | Xeon 6434 @ 3.7GHz)" { style.fill: "#ebfbee" }
+
+  # U07 至 U14: MySQL MGR (2台 4U 核心存储大坝)
+  u11_u14: "U11-U14: MySQL MGR 细胞分片主节点 [4U]\n(SSD RAID-10 | Dual Xeon 8480+ | 1TB)" { style.fill: "#fff9db" }
+  u07_u10: "U07-U10: MySQL MGR 细胞分片副本节点 [4U]\n(SSD RAID-10 | Dual Xeon 8480+ | 1TB)" { style.fill: "#fff9db" }
+
+  # U03 至 U06: 配电层
+  u05_u06: "U05-U06: ATS 双路静态切换开关 [2U]\n(A+B 高压市电 4ms 毫秒级瞬时切电控制)" { style.fill: "#f8f9fa" }
+  u03_u04: "U03-U04: 冗余双路 PDU 智能电源轨 [2U]\n(PDU-A / PDU-B 物理隔离供电)" { style.fill: "#f8f9fa" }
+
+  # U01 & U02: 物理隔层
+  u01_u02: "U01-U02: 机柜底部进风过虑空气格栅与盲板 [2U]" { style.fill: "#dee2e6" }
+
+  # 强制进行严格的 42U 垂直从上至下物理 RU 堆叠关联 (通过隐藏边实现)
+  u42 -> u41: { style.stroke-width: 0 }
+  u41 -> u40: { style.stroke-width: 0 }
+  u40 -> u39: { style.stroke-width: 0 }
+  u39 -> u37_u38: { style.stroke-width: 0 }
+  u37_u38 -> u35_u36: { style.stroke-width: 0 }
+  u35_u36 -> u33_u34: { style.stroke-width: 0 }
+  u33_u34 -> u31_u32: { style.stroke-width: 0 }
+  u31_u32 -> u29_u30: { style.stroke-width: 0 }
+  u29_u30 -> u27_u28: { style.stroke-width: 0 }
+  u27_u28 -> u25_u26: { style.stroke-width: 0 }
+  u25_u26 -> u23_u24: { style.stroke-width: 0 }
+  u23_u24 -> u21_u22: { style.stroke-width: 0 }
+  u21_u22 -> u19_u20: { style.stroke-width: 0 }
+  u19_u20 -> u17_u18: { style.stroke-width: 0 }
+  u17_u18 -> u16_u15: { style.stroke-width: 0 }
+  u16_u15 -> u11_u14: { style.stroke-width: 0 }
+  u11_u14 -> u07_u10: { style.stroke-width: 0 }
+  u07_u10 -> u05_u06: { style.stroke-width: 0 }
+  u05_u06 -> u03_u04: { style.stroke-width: 0 }
+  u03_u04 -> u01_u02: { style.stroke-width: 0 }
+}

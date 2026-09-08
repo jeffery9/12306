@@ -6,7 +6,7 @@
 
 > **解构中国铁路级难题**：12306 作为全球并发写峰值最高、售票区间逻辑最复杂的票务系统之一，民间存在诸多关于“海量锁冲突、库存超卖、长途腿抢占短途腿、数据库瞬间瘫痪”的传说与技术猜想。
 >
-> 本项目以 [**CQRS（读写分离）**](./docs/12306%20高并发票务系统技术方案.md) 与 [**EDA（事件驱动）**](./docs/12306_事件驱动架构_EDA_设计方案.md) 为核心架构思想，在 **AI Agent（Gemini CLI 极致去幻觉协议 + ChatGPT 首席架构师）** 的深度协作下，使用纯粹而精纯的 **Python 3.9 + FastAPI + SQLAlchemy + Redis Lua + Kafka** 核心生态，实现了针对“一车多站、区间座位复用、防死锁、最终一致性”这一 L3/L4 级别核心难题的工业级可运行垂直切片 MVP。
+> 本项目以 [**CQRS（读写分离）**](./docs/03_01_12306_High_Concurrency_Ticketing_Technical_Architecture.md) 与 [**EDA（事件驱动）**](./docs/03_02_12306_Event_Driven_Architecture_EDA_Design.md) 为核心架构思想，在 **AI Agent（Gemini CLI 极致去幻觉协议 + ChatGPT 首席架构师）** 的深度协作下，使用纯粹而精纯的 **Python 3.9 + FastAPI + SQLAlchemy + Redis Lua + Kafka** 核心生态，实现了针对“一车多站、区间座位复用、防死锁、最终一致性”这一 L3/L4 级别核心难题的工业级可运行垂直切片 MVP。
 >
 > 🚀 **全架构深度合龙**：系统目前已打通 **“B2C 乘客高并发抢票”** 与 **“B2B 铁路局端运营调度、动态票价阶梯收益、长途保障票池隔离、智能化邻座/换座拼装、以及 TRS 权威主调度系统一键发布”** 的全生命周期，并配套高标准 SRE 监控、数据自动配席预热暖身及一键运维大纲脚本。
 
@@ -28,7 +28,7 @@
 
 ### 💡 我们的破局猜想：双防御、读写分离、内存位掩码（CQRS & Bitmask）
 
-本系统抛弃了传统的“票仓数量减 1”的设计，采用 [**“区间段位图（Bitmap）预占”**](./docs/12306_区间段位图_Bitmap_预占设计方案.md) + **数据库排序段级行锁** 的物理方案：
+本系统抛弃了传统的“票仓数量减 1”的设计，采用 [**“区间段位图（Bitmap）预占”**](./docs/02_01_12306_Segment_Bitmap_Reservation_Algorithm_Design.md) + **数据库排序段级行锁** 的物理方案：
 
 ```text
   站点序列 (Station Sequence):   [北京] (1) ───► [天津] (2) ───► [济南] (3) ───► [上海] (4)
@@ -166,7 +166,7 @@
 - **无状态核心 HPA (HorizontalPodAutoscaler)**：在 `ticketing-web-api` 的 CPU 平均水位超 75% 时进行秒级极速横向扩容（Pod 实例数 5 -> 100），并配备了高标准的 Liveness & Readiness 自愈健康探针。
 - **事件驱动 KEDA (Kafka ScaledObject)**：对投影消费端 `ticketing-projector` 引入 KEDA 事件驱动扩缩容。一旦 Kafka 消息积压（Consumer Lag）超过 100 条，代表缓存投影时差拉大，系统瞬间横向拉起 32 路并行投影，强制将读写最终一致性延迟时间锁定在 100ms 黄金安全水位线！
 
-👉 **[点击阅读：《云原生弹性伸缩 (Auto-Scaling) 方案与 K8s/KEDA 声明规约》](./docs/12306_云原生弹性伸缩_K8s_HPA_KEDA_方案与声明规约.md)**
+👉 **[点击阅读：《云原生弹性伸缩 (Auto-Scaling) 方案与 K8s/KEDA 声明规约》](./docs/05_03_12306_Cloud_Native_Autoscaling_K8s_HPA_KEDA_Specifications.md)**
 👉 **[点击查阅：K8s 物理部署清单声明 `./deploy/k8s-autoscale-manifests.yaml`](./deploy/k8s-autoscale-manifests.yaml)**
 
 ---
@@ -236,7 +236,7 @@ python -m uvicorn src.app.web_server:app --host 0.0.0.0 --port 8080 --reload
 
 ### 🚀 5. 发起 curl 撞击调试流
 
-请参照最新的 [12306_Python_技术实现与落地方案.md](./docs/12306_Python_技术实现与落地方案.md) 中的 **第 4 节 (API 端点现场调用与冒烟调试指南)**，通过 6 个原子的 `curl` 请求对以下流程执行手动调试验证：
+请参照最新的 [04_02_12306_Python_Implementation_and_Development_Guide.md](./docs/04_02_12306_Python_Implementation_and_Development_Guide.md) 中的 **第 4 节 (API 端点现场调用与冒烟调试指南)**，通过 6 个原子的 `curl` 请求对以下流程执行手动调试验证：
 
 - 余票冷查询回源重算重建缓存 ──► 并发抢票预占 ──► 待支付订单创建 ──► 模拟支付扣款 ──► 触发后台 Outbox 消息循环 ──► 读写最终一致性检验。
 
@@ -257,7 +257,11 @@ _AI 与人类工程师在 12306 这一千古难题上的这次极简交锋，证
 
 当并发达到 100,000,000 QPS 的史诗级海量狂澜时，单机与小集群终将面临物理算力的绝对瓶颈。基于本项目经过完美死锁剥离的微观理论内核，我们草拟了进军亿级的宏观扩展路线图：
 
-👉 **[点击阅读：《12306 性能基线报告、亿级超高并发容量规划与硬件选型白皮书》](./docs/12306_亿级超高并发容量规划与硬件选型白皮书.md)**
-👉 **[点击阅读：《12306 高并发票务系统 — 运行成本估算与 TCO 财务预算白皮书》](./docs/12306_高并发系统运行成本估算与财务预算白皮书.md)**
+👉 **[点击阅读：《12306 性能基线报告、亿级超高并发容量规划与硬件选型白皮书》](./docs/05_05_12306_High_Concurrency_Capacity_Planning_and_Hardware_Sizing.md)**
+👉 **[点击阅读：《12306 高并发票务系统 — 运行成本估算与 TCO 财务预算白皮书》](./docs/05_06_12306_High_Concurrency_System_Cost_Modeling_and_Financial_Budget.md)**
+👉 **[点击阅读：《12306 跨地域多中心异地双活与高可用灾备架构白皮书》](./docs/05_07_12306_Multi_Region_Active_Active_Disaster_Recovery_Architecture.md)**
+👉 **[点击阅读：《12306 SRE 极限过载稳定性保障：多级限流、熔断降级与动态排队白皮书》](./docs/05_08_12306_SRE_Rate_Limiting_Circuit_Breaker_and_Dynamic_Queuing_Playbook.md)**
+👉 **[点击阅读：《12306 生产级系统高可用 SLA 估算与数学论证白皮书》](./docs/05_09_12306_High_Availability_SLA_Estimation_and_Mathematical_Proof.md)**
+👉 **[点击阅读：《12306 生产级 SRE 组织架构、On-Call 响应与混沌工程演练白皮书》](./docs/05_10_12306_SRE_Team_Building_and_OnCall_Operations_Manual.md)**
 
 这些设计与白皮书详述了如何通过 **“CDN 智能边缘预热”、“排队削峰网关”、“MySQL 五百一十二等份细胞化分表（Cellular Sharding）” 以及 “CDC 增量解耦”** 的物理堆叠，配合高主频 Redis 节点、512 主从 MySQL SSD 磁盘矩阵、跨中心光环线的精确配置计算，以及云原生 HPA/KEDA 自动弹性缩容的年度降本 ROI 核算，在代码微观骨架不变的前提下，构建出承载地狱级峰值且极具财务性价比的数字长城。

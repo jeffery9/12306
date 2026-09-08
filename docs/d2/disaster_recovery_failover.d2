@@ -1,0 +1,27 @@
+direction: right
+
+State1: "[1] 北京DC常态运行\n(Active Master)" {
+  style.fill: "#ebfbee"
+  style.stroke: "#2b8a3e"
+}
+State2: "[2] BFD 30ms 探针断开\n(Link Down Detect)" {
+  style.fill: "#fff5f5"
+  style.stroke: "#c92a2a"
+}
+State3: "[3] 武汉仲裁拉票决定\n(Consensus Arbitration)" {
+  style.fill: "#fff9db"
+  style.stroke: "#f59f00"
+}
+State4: "[4] 所有权动态重塑漂移\n(SOS Dynamic Sharding)" {
+  style.fill: "#fff0f6"
+  style.stroke: "#d6336c"
+}
+State5: "[5] 上海DC单边全量接管\n(Full Service Restored)" {
+  style.fill: "#e7f5ff"
+  style.stroke: "#1864ab"
+}
+
+State1 -> State2: "北京供电崩溃/专线断开"
+State2 -> State3: "3x10ms探针物理丢包"
+State3 -> State4: "签发 2/3 多数决策共识票"
+State4 -> State5: "1.5s DNS 解析自适应重定向"

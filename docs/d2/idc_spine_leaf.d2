@@ -1,0 +1,61 @@
+# Clos 三级无阻塞 Spine-Leaf 网络拓扑
+direction: down
+
+spines: "Spine 核心交换层 (40G/100G)" {
+  style.fill: "#eef2ff"
+  s1: "Spine-1"
+  s2: "Spine-2"
+  s3: "Spine-3"
+  s4: "Spine-4"
+}
+
+leaves: "Leaf 接入交换层 (25G/100G)" {
+  style.fill: "#ecfdf5"
+  l1: "Leaf-1\n(Service)"
+  l2: "Leaf-2\n(Storage)"
+  ln: "Leaf-N\n(Edge)"
+}
+
+racks: "服务器机架部署" {
+  style.fill: "#fffbeb"
+  
+  rack1: "计算 Rack-01" {
+    node1: "Node-1 (API Pods)"
+    node2: "Node-2 (API Pods)"
+  }
+  
+  rack2: "缓存 Rack-02" {
+    node3: "Node-3 (Redis Core)"
+    node4: "Node-4 (Redis Core)"
+  }
+  
+  rack_n: "边界 Rack-N" {
+    gateway: "Edge Gateway"
+  }
+}
+
+# Clos full mesh connections
+spines.s1 <-> leaves.l1
+spines.s1 <-> leaves.l2
+spines.s1 <-> leaves.ln
+
+spines.s2 <-> leaves.l1
+spines.s2 <-> leaves.l2
+spines.s2 <-> leaves.ln
+
+spines.s3 <-> leaves.l1
+spines.s3 <-> leaves.l2
+spines.s3 <-> leaves.ln
+
+spines.s4 <-> leaves.l1
+spines.s4 <-> leaves.l2
+spines.s4 <-> leaves.ln
+
+# Leaf downlinks
+leaves.l1 -> racks.rack1.node1: "25G DAC Dual-Bond"
+leaves.l1 -> racks.rack1.node2: "25G DAC Dual-Bond"
+
+leaves.l2 -> racks.rack2.node3: "25G DAC Dual-Bond"
+leaves.l2 -> racks.rack2.node4: "25G DAC Dual-Bond"
+
+leaves.ln -> racks.rack_n.gateway: "25G Dual-Bond"

@@ -1,0 +1,49 @@
+direction: up
+
+Region1: "北京丰台主数据中心\n(Active Core A - Shards 01-24)" {
+  style.fill: "#e7f5ff"
+  style.stroke: "#1864ab"
+  style.stroke-width: 2
+  MGR1: "MySQL Shards 01-24\n(Active Master 写)" {
+    style.fill: "#d0ebff"
+  }
+  Redis1: "Redis Segment Lock A" {
+    style.fill: "#d0ebff"
+  }
+}
+
+Region2: "上海虹桥双活副数据中心\n(Active Core B - Shards 25-48)" {
+  style.fill: "#f3f0ff"
+  style.stroke: "#6f2dbd"
+  style.stroke-width: 2
+  MGR2: "MySQL Shards 25-48\n(Active Master 写)" {
+    style.fill: "#e5dbff"
+  }
+  Redis2: "Redis Segment Lock B" {
+    style.fill: "#e5dbff"
+  }
+}
+
+Region3: "武汉东西湖极速仲裁中心\n(DR Arbiter Core)" {
+  style.fill: "#f8f9fa"
+  style.stroke: "#495057"
+  style.stroke-width: 2
+  ZK: "Distributed ZooKeeper\nRaft 奇数仲裁集群" {
+    style.fill: "#e9ecef"
+  }
+}
+
+Region1.MGR1 <-> Region2.MGR2: "DWDM 京沪专属双路光纤\n(30ms RTT 异步流水复制)" {
+  style.stroke: "#228be6"
+  style.stroke-width: 3
+}
+
+Region1 <-> Region3: "DWDM 京武专线\n(15ms RTT 仲裁探针)" {
+  style.stroke-dash: 5
+  style.stroke: "#adb5bd"
+}
+
+Region2 <-> Region3: "DWDM 沪武专线\n(15ms RTT 仲裁探针)" {
+  style.stroke-dash: 5
+  style.stroke: "#adb5bd"
+}

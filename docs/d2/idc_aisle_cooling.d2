@@ -1,0 +1,41 @@
+# IDC 机架冷热通道气流循环与 CAC 密闭隔离
+direction: right
+
+room: "自建高可用数据中心机房 (Uptime Tier III+)" {
+  style.fill: "#f8f9fa"
+  
+  air_con: "机房精密空调\n(Precision CRAC Air Conditioner)" {
+    style.fill: "#e8f4fd"
+  }
+  
+  rack_a: "服务器机柜 A\n(Rack Cabinet A)" {
+    style.fill: "#dee2e6"
+    chassis_a: "服务器排 A" { style.fill: "#adb5bd" }
+  }
+  
+  cac_aisle: "密闭冷通道 (CAC Aisle)\n[22℃ ± 2℃]" {
+    style.fill: "#e8f2ff"
+    style.stroke: "#339af0"
+    style.stroke-width: 3
+  }
+  
+  rack_b: "服务器机柜 B\n(Rack Cabinet B)" {
+    style.fill: "#dee2e6"
+    chassis_b: "服务器排 B" { style.fill: "#adb5bd" }
+  }
+  
+  hot_aisle: "公共热通道 (Hot Aisle)\n[热风集中回流区]" {
+    style.fill: "#fff5f5"
+    style.stroke: "#fa5252"
+  }
+}
+
+# Airflow looping
+room.air_con -> room.cac_aisle: "送出洁净冷风" { style.stroke: "#339af0"; style.stroke-width: 3 }
+room.cac_aisle -> room.rack_a.chassis_a: "冷空气进入机箱" { style.stroke: "#339af0" }
+room.cac_aisle -> room.rack_b.chassis_b: "冷空气进入机箱" { style.stroke: "#339af0" }
+
+room.rack_a.chassis_a -> room.hot_aisle: "服务器加热排风" { style.stroke: "#fa5252" }
+room.rack_b.chassis_b -> room.hot_aisle: "服务器加热排风" { style.stroke: "#fa5252" }
+
+room.hot_aisle -> room.air_con: "热空气回风循环" { style.stroke: "#fa5252"; style.stroke-width: 3; style.stroke-dash: 3 }

@@ -1,0 +1,31 @@
+direction: down
+
+original: "1,000,000 QPS 原始并发洪峰\n(春运起售超频冲击)" {
+  style.fill: "#f8f9fa"
+  style.stroke: "#adb5bd"
+}
+cdn: "1. 边缘CDN / WAF 漏斗拦截\n[ 100,000 QPS ]" {
+  style.fill: "#ffe3e3"
+  style.stroke: "#fa5252"
+  style.stroke-width: 2
+}
+lua: "2. OpenResty Nginx Lua 令牌桶\n[ 10,000 QPS ]" {
+  style.fill: "#ffccd5"
+  style.stroke: "#fa5252"
+  style.stroke-width: 2
+}
+envoy: "3. Envoy Sidecar 并发连接限制\n[ 5,000 QPS ]" {
+  style.fill: "#e2eafc"
+  style.stroke: "#4c6ef5"
+  style.stroke-width: 3
+}
+mgr: "4. MySQL MGR 物理落盘\n[ <= 5,000 TPS ]" {
+  style.fill: "#ebfbee"
+  style.stroke: "#2b8a3e"
+  style.stroke-width: 3
+}
+
+original -> cdn: "滑动时间窗口 (10 QPS/设备限制)"
+cdn -> lua: "分布式令牌桶 (r=10,000/s 原子校验)"
+lua -> envoy: "自适应并发时延 RTT 熔断"
+envoy -> mgr: "Kafka 串行消息顺序写入落盘"
