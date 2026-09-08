@@ -72,7 +72,28 @@
 
 ---
 
-## 2. 机柜空间规划与配重安全限制 (Space & Weight Constraints)
+## 2. 算力节点双规格弹性分配策略 (Dual-Profile Compute Allocation)
+
+为了在全生命周期内获得最优开发验证灵活性与线上极致处理性能，机柜中的 4 大应用计算物理节点（RU 28-35）采用双规格弹性定义：
+
+### 🚀 A. 默认生产高性能标准 (Default Go-Native Production Profile)
+在生产环境中，机柜内的 4 台 2U 物理计算服务器 **100% 部署 Go 原生编译售票引擎**（打包成轻量级原生容器）。
+*   **分配比例**：
+    *   **Compute Server 1 & 2**：作为高能核心微服务写链路（Write Path）高并发容器组宿主机，处理票务查询与预预占。
+    *   **Compute Server 3**：作为后台事件投影分析器（CQRS Projector）与 Transactional Outbox 消息高频轮询分发器。
+    *   **Compute Server 4**：作为热冗余备份节点（Hot Standby），在 Server 1-3 任意一台发生硬件过热或网卡熔断时，通过 Keepalived/HAProxy 在 50ms 内无感接管。
+*   **核心优势**：完全剥离了传统 Java VM 虚拟解释与 Python 厚重运行时的内存压榨，使每台服务器的 CPU/内存利用率维持在最佳 40% 的黄金负载线，提供惊人的高密度吞吐安全裕度。
+
+### 📋 B. 备用多语言测试规格 (Multi-Language Testing & Protocol Validation Profile)
+在测试联调与多语言协议对称性验证阶段（对应前端 Web switcher 后端切换器），4 大服务器节点按多语言分别实例化：
+*   **Compute Server 1**：部署 Python (FastAPI) 引擎（Port 8000）。
+*   **Compute Server 2**：部署 Go (Native) / Rust (Axum) 高性能引擎（Port 8001 / Port 8004）。
+*   **Compute Server 3**：部署 C# (.NET 7.0) 引擎（Port 8002）。
+*   **Compute Server 4**：部署 Java (Spring Boot 3.1) 微服务引擎（Port 8003）。
+
+---
+
+## 3. 机柜空间规划与配重安全限制 (Space & Weight Constraints)
 
 为了防止机柜发生头重脚轻导致倾覆，以及为了保障维护安全，配重分布必须符合 **“下重上轻”** 刚性律令：
 1.  **高配重高负载设备下沉**：4U 重型 PostgreSQL 物理服务器、SAN 存储阵列、UPS 备用蓄电池组，强制放置于机柜下半部（**1U - 20U 黄金重载区**）。
