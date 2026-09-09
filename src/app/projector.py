@@ -14,29 +14,46 @@ class Projector:
             logger.warning("Event missing event_id, skipping.")
             return False
 
-        # 1. Idempotency Check: try to write a ProcessedEvent inside a local transaction
-        stmt = select(ProcessedEvent).where(
-            ProcessedEvent.consumer_name == "Projector",
-            ProcessedEvent.event_id == event_id
-        )
-        existing = (await db_session.execute(stmt)).scalar()
-        if existing:
-            logger.info(f"Event {event_id} already processed by Projector, skipping.")
-            return False
+        # Extract W3C traceparent from event payload to dynamically resume active trace context
+        payload = event.get("payload", {}) or {}
+        tp = payload.get("traceparent")
+        token_id, token_parent = None, None
+        if tp:
+            from src.app.telemetry import trace_id_var, traceparent_var
+            parts = tp.split("-")
+            if len(parts) == 4:
+                trace_id = parts[1]
+                token_id = trace_id_var.set(trace_id)
+                token_parent = traceparent_var.set(tp)
 
-        # Insert ProcessedEvent record
-        pe = ProcessedEvent(consumer_name="Projector", event_id=event_id)
-        db_session.add(pe)
+        try:
+            # 1. Idempotency Check: try to write a ProcessedEvent inside a local transaction
+            stmt = select(ProcessedEvent).where(
+                ProcessedEvent.consumer_name == "Projector",
+                ProcessedEvent.event_id == event_id
+            )
+            existing = (await db_session.execute(stmt)).scalar()
+            if existing:
+                logger.info(f"Event {event_id} already processed by Projector, skipping.")
+                return False
 
-        # 2. Extract payload and recalculate affected train schedule availability query cache
-        payload = event.get("payload", {})
-        schedule_id = payload.get("schedule_id")
-        if not schedule_id:
-            logger.warning(f"Event {event_id} missing schedule_id in payload, skipping.")
-            return False
+            # Insert ProcessedEvent record
+            pe = ProcessedEvent(consumer_name="Projector", event_id=event_id)
+            db_session.add(pe)
 
-        await Projector.recalculate_and_project(db_session=db_session, schedule_id=schedule_id)
-        return True
+            # 2. Extract payload and recalculate affected train schedule availability query cache
+            schedule_id = payload.get("schedule_id")
+            if not schedule_id:
+                logger.warning(f"Event {event_id} missing schedule_id in payload, skipping.")
+                return False
+
+            await Projector.recalculate_and_project(db_session=db_session, schedule_id=schedule_id)
+            return True
+        finally:
+            if token_id is not None and token_parent is not None:
+                from src.app.telemetry import trace_id_var, traceparent_var
+                trace_id_var.reset(token_id)
+                traceparent_var.reset(token_parent)
 
     @staticmethod
     async def recalculate_and_project(db_session, schedule_id: int):

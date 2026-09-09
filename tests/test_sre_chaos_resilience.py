@@ -103,3 +103,65 @@ def test_redis_spof_down_resilience_and_graceful_degradation(db_session, event_l
                 assert mock_redis.hget.called
 
     event_loop.run_until_complete(_impl())
+
+def test_outbox_and_projector_trace_propagation(db_session, event_loop):
+    """Verify asynchronous W3C tracing context propagation across transactional outbox and CQRS Projector boundaries."""
+    async def _impl():
+        from src.app.telemetry import trace_id_var, traceparent_var
+        from src.app.models import OutboxEvent
+        from src.app.projector import Projector
+        
+        # 1. Set context variables to simulate active HTTP request thread
+        test_trace_id = "aabbccddeeff00112233445566778899"
+        test_traceparent = f"00-{test_trace_id}-1122334455667788-01"
+        
+        token_id = trace_id_var.set(test_trace_id)
+        token_parent = traceparent_var.set(test_traceparent)
+        
+        try:
+            # 2. Instantiate OutboxEvent; context should automatically inject W3C traceparent into the JSON payload
+            event = OutboxEvent(
+                event_id="evt_tracing_test_01",
+                aggregate_type="ORDER",
+                aggregate_id="ord_test_01",
+                event_type="ORDER_CREATED",
+                payload={"order_id": "ord_test_01", "schedule_id": 999}
+            )
+            
+            # Assert automatic context injection
+            assert "traceparent" in event.payload
+            assert event.payload["traceparent"] == test_traceparent
+        finally:
+            trace_id_var.reset(token_id)
+            traceparent_var.reset(token_parent)
+            
+        # Clear variables to simulate a fresh Kafka worker environment
+        assert trace_id_var.get() == ""
+        assert traceparent_var.get() == ""
+        
+        # 3. Simulate Projector consuming the outbox event in background
+        # We patch Projector.recalculate_and_project to capture and verify the trace_id in context during execution!
+        trace_captured_in_projector = ""
+        
+        async def mock_recalculate(db_session, schedule_id):
+            nonlocal trace_captured_in_projector
+            trace_captured_in_projector = trace_id_var.get()
+            
+        with patch.object(Projector, "recalculate_and_project", side_effect=mock_recalculate):
+            # Formulate the raw event dictionary received from Kafka
+            event_dict = {
+                "event_id": "evt_tracing_test_01",
+                "payload": event.payload
+            }
+            
+            # Execute background projection
+            await Projector.process_event(db_session=db_session, event=event_dict)
+            
+            # Verify context propagation successfully resumed inside the background task context!
+            assert trace_captured_in_projector == test_trace_id
+            
+        # Verify that context variables are safely cleaned up after processing to prevent memory leakage
+        assert trace_id_var.get() == ""
+        assert traceparent_var.get() == ""
+        
+    event_loop.run_until_complete(_impl())

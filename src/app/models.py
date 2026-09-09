@@ -112,6 +112,17 @@ class OutboxEvent(Base):
     created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
     published_at = Column(TIMESTAMP, nullable=True)
 
+    def __init__(self, **kwargs):
+        """Automatically propagate the current active W3C traceparent context down to the outbox event payload."""
+        from src.app.telemetry import traceparent_var
+        tp = traceparent_var.get()
+        if tp:
+            # Inject traceparent silently into the JSON serializable payload dict
+            payload = kwargs.setdefault("payload", {})
+            if isinstance(payload, dict):
+                payload.setdefault("traceparent", tp)
+        super().__init__(**kwargs)
+
 class ProcessedEvent(Base):
     __tablename__ = "processed_event"
 

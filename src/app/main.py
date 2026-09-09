@@ -8,6 +8,10 @@ from src.app.database import async_session
 from src.app.redis_client import get_redis
 from src.app.reservation_service import ReservationService
 from src.app.order_service import OrderService
+from src.app.telemetry import setup_telemetry_logging, trace_id_var, traceparent_var
+
+# Initialize SRE structured telemetry logging carrying distributed trace_ids
+setup_telemetry_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +49,16 @@ async def trace_context_propagation_middleware(request: Request, call_next):
     # Store trace_id in request state for debugging or logs
     request.state.trace_id = trace_id
     
-    response = await call_next(request)
+    # Set thread/async-task-safe ContextVar tokens to inject trace_id automatically to all logs
+    token_id = trace_id_var.set(trace_id)
+    token_parent = traceparent_var.set(new_traceparent)
+    
+    try:
+        response = await call_next(request)
+    finally:
+        # Prevent any potential memory leak by safely resetting contextvar tokens
+        trace_id_var.reset(token_id)
+        traceparent_var.reset(token_parent)
     
     # Propagate trace context to response headers and inject multi-language identifier
     response.headers["traceparent"] = new_traceparent
