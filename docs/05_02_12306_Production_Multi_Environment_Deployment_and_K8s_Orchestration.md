@@ -455,4 +455,81 @@ spec:
     *   保留受灾 v2 镜像的 1 个 Pod 处于 `Debug` 挂起状态（隔离流量），拉取其 coredump 物理文件，结合 Prometheus 日志面板和 Jaeger 追踪上下文开展闭环取证，消除线上幽灵风险。
 
 ---
+
+## 7. 生产级 DevOps 流水线规程与多环境制品晋级规范 (Production-Grade DevOps Pipeline & Environment Promotion Manual)
+
+为了保障 12306 核心算力（包含 Python, Go, Rust, Java, C# 后端核心引擎）在多环境更迭发布过程中的绝对版本一致性，DevOps 团队强制推行 **“一次编译、到处运行（Build Once, Run Anywhere）”** 的制品晋级与 GitOps 声明式持续部署规程。
+
+### A. GitOps 持续交付与多环境制品晋级拓扑 (GitOps CD & Artifact Promotion Pipeline)
+系统开发、测试、验收与生产发布流程，采用代码仓（Application Code Repo）与配置仓（GitOps Config Repo）物理分离的双仓架构，规避发布流水线循环触发：
+
+```text
+========================================================================================================
+                     GITOPS DECLARATIVE CD & ARTIFACT PROMOTION PIPELINE
+========================================================================================================
+
+  [ Developer Commit ] ──► [ Git Code Repo ] ──► [ CI Pipeline: GitHub Actions/GitLab CI ]
+                                                        │
+                                                        ├──► [ 1. Linter & Format ] (Ruff, Clippy)
+                                                        ├──► [ 2. Unit & BDD Tests ] (pytest-bdd >90%)
+                                                        ├──► [ 3. SAST & Security ] (SonarQube A / Trivy)
+                                                        │
+                                                        ▼ (Passes Quality Gates!)
+                                                 [ Build Docker Image ]
+                                                        │
+                                                        ▼ (Push image with Git Commit SHA tag)
+                                                 [ Docker Registry / Harbor ]
+                                                        │
+                                                        ▼ (Git Commit SHA updated in Config Repo)
+                                             [ GitOps Config Repo ]
+                                                        │
+                                                        ▼ (Auto-Sync / Pull Declarative State)
+                                                 [ ArgoCD Controller ]
+                                                        │
+             ┌──────────────────────────────────────────┼──────────────────────────────────────────┐
+             ▼ (Auto-Sync)                              ▼ (Manual Approved Promotion)              ▼ (Final Promotion)
+    [ K8s - DEV Cluster ]                     [ K8s - UAT Cluster ]                     [ K8s - PROD Cluster ]
+
+========================================================================================================
+```
+
+1.  **单向制品晋级原则（Immutable Artifacts）**：
+    *   在开发（DEV）分支合入后，CI 流水线执行且仅执行一次 Docker 镜像编译，生成带 Git 唯一哈希（Git Commit SHA）的不可变镜像（Harbor 镜像仓库存储）。
+    *   **严禁针对同一个发布版本，在测试（UAT）、预发（PRE）和生产（PROD）环境重复进行编译**。环境的切换，必须且只能通过 K8s `ConfigMap` 和 `Secret` 注入中央 CMDB 参数（如数据库、Redis 和 Kafka 连接地址）来实现。
+2.  **ArgoCD 声明式自动同步（GitOps Pull-based CD）**：
+    *   在 K8s 目标集群内额外部署 ArgoCD 控制器，实时监听 `GitOps Config Repo`（包含对应环境的 Helm Charts 或 Kustomize 声明）。
+    *   当新镜像合入 Harbor 且通过验收后，流水线修改配置仓内镜像 Tag，ArgoCD 秒级自动拉取（Sync）最新声明，实现物理集群状态与 Git 配置的绝对、无漂移对齐。
+
+### B. CI 流水线核心组件与质量红线卡点 (CI Quality Gates & Red Lines)
+每一次合入 `release/*` 或 `main` 的 PR，必须无条件通过严苛的 **Quality Gates 质量红线**，任意一项指标未通过，流水线强制自动熔断并锁定合入权限：
+
+1.  **代码静态安全与规范扫描（Linter & SAST）**：
+    *   **规范卡点**：针对 Python 强制执行 `ruff check .` 和 `black --check .` 校验；针对 Go 执行 `golangci-lint`；针对 Rust 执行 `cargo clippy`。**报错数严格为 0**。
+    *   **安全扫描（SonarQube）**：引入静态白盒安全漏洞扫描，**阻断级漏洞（Vulnerabilities）必须为 0**，安全等级（Security Rating）必须为 **A**。
+2.  **测试覆盖率刚性红线（Unit & BDD Coverage Gate）**：
+    *   流水线拉起 Docker 镜像，自动启动 PostgreSQL 与 Redis 单元沙箱，一键执行全量测试套件：
+        ```bash
+        pytest -v tests/ --cov=src/ --cov-fail-under=90
+        ```
+    *   **覆盖率红线**：**核心业务单元测试覆盖率与 BDD Gherkin 用例验证率必须达到 90% 以上**，否则直接判定发布失败。
+3.  **容器基础镜像零高危漏洞扫描（Trivy Image Scan）**：
+    *   新编译的业务镜像在推入 Harbor 前，强制通过安全扫描工具（Trivy）执行漏洞排查，**致命与高危安全漏洞（Critical & High CVEs）数量必须为 0**。
+
+### C. 自动化灰度晋级生命周期管理 (Multi-Environment Promotion Lifecycle)
+DevOps 流程将制品的生命周期划分为 4 个严格隔离的环境晋级阶段，每个阶段通过独立的 Git 分支进行物理对准：
+
+*   **开发自测阶段 (DEV Environment)**：
+    *   **对应分支**：`feature/*` 合入到 `develop` 分支。
+    *   **自动化行为**：自动编译，自动推送，ArgoCD 自动部署至 DEV 命名空间，供开发执行 API 快速调试与联调。
+*   **用户与业务验收阶段 (UAT Environment)**：
+    *   **对应分支**：从 `develop` 签出并合并至 `release/*` 分支。
+    *   **自动化行为**：通过金丝雀（Canary）方式向 UAT 环境滚动，QQA 自动化执行 locust 压力测试与 pytest-bdd 全量功能验收，生成自动化验收报告。
+*   **预发布验证阶段 (PRE Environment)**：
+    *   **对应分支**：合入 `main` 前的暂存验证阶段。
+    *   **自动化行为**：完全对齐生产环境的硬件配额，在此阶段导入 $5\%$ 真实生产流量（影子测试/只读流量），验证系统的性能损耗与死锁毛刺。
+*   **生产发布阶段 (PROD Environment)**：
+    *   **对应分支**：`main` 分支合入并打上 Release Tag（如 `v1.10.0`）。
+    *   **自动化行为**：需要双人审批（研发负责人 + SRE 负责人签名）解锁部署权限，在凌晨 SRE 规定的运维发布时间窗口（02:00-04:00）内，由 ArgoCD 以滚动更新和金丝雀割接的方式进行生产环境的平滑覆盖发布。
+
+---
 **Deployment Specifications Ready | Bare-Metal & Cloud Blueprints Fully Formulated | SRE Certified**
