@@ -1,7 +1,7 @@
 # 🌌 PgBouncer Enterprise-Grade Connection Pooler Config Spec
 # ⚠️ THIS FILE IS AUTO-GENERATED FROM CMDB INVENTORY. DO NOT EDIT DIRECTLY.
 [databases]
-* = host=haproxy port=5000 auth_user=postgres
+* = host={{ haproxy_host }} port={{ haproxy_write }} auth_user=postgres
 
 [pgbouncer]
 logfile = /var/log/postgresql/pgbouncer.log
@@ -11,7 +11,7 @@ pidfile = /var/run/postgresql/pgbouncer.pid
 # Network Port & Bind Addresses
 # ─────────────────────────────────────────────────────────────────────────────
 listen_addr = *
-listen_port = 6432
+listen_port = {{ pgbouncer_listen }}
 
 # Authentication
 auth_type = md5

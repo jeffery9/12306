@@ -1,0 +1,99 @@
+{
+    "cluster": {
+        "name": "ticketing-ha-cluster",
+        "etcd_token": "etcd-12306-2r3dc-token"
+    },
+    "ports": {
+        "haproxy_stats": "7000",
+        "haproxy_write": "5000",
+        "haproxy_read": "5001",
+        "pgbouncer_listen": "6432",
+        "postgres_port": "5432",
+        "patroni_rest_port": "8008",
+        "exporter_port": "9187"
+    },
+    "hosts": {
+        "haproxy": "haproxy",
+        "pgbouncer": "pgbouncer",
+        "nodes": [
+            { "name": "pg-node1", "host": "pg-node1" },
+            { "name": "pg-node2", "host": "pg-node2" },
+            { "name": "pg-node3", "host": "pg-node3" }
+        ],
+        "exporters": [
+            { "name": "pg-exporter-node1", "host": "pg-exporter-node1" },
+            { "name": "pg-exporter-node2", "host": "pg-exporter-node2" },
+            { "name": "pg-exporter-node3", "host": "pg-exporter-node3" }
+        ]
+    },
+    "regions": {
+        "beijing": {
+            "id": "1",
+            "name": "北京丰台主中心",
+            "etcd_ip": "10.100.0.10",
+            "etcd_peer_port": "2380",
+            "etcd_client_port": "2379",
+            "pg_master_name": "pg-node1-beijing",
+            "shards": "01-24"
+        },
+        "shanghai": {
+            "id": "2",
+            "name": "上海虹桥副中心",
+            "etcd_ip": "10.120.0.20",
+            "etcd_peer_port": "2380",
+            "etcd_client_port": "2379",
+            "pg_master_name": "pg-node4-shanghai",
+            "shards": "25-48"
+        },
+        "wuhan": {
+            "id": "3",
+            "name": "武汉东西湖仲裁中心",
+            "etcd_ip": "10.200.0.30",
+            "etcd_peer_port": "2380",
+            "etcd_client_port": "2379",
+            "heartbeat_interval_ms": 250,
+            "election_timeout_ms": 1250,
+            "quota_backend_bytes": 8589934592
+        }
+    },
+    "k8s": {
+        "namespace": "ticketing-prod",
+        "web_replicas": 5,
+        "web_image": "ticketing_web:latest",
+        "cpu_request": "1000m",
+        "cpu_limit": "2000m",
+        "memory_request": "2Gi",
+        "memory_limit": "4Gi",
+        "database_url": "postgresql+asyncpg://postgres:postgres@pg-node-haproxy.ticketing-prod.svc.cluster.local:5000/ticketing_db",
+        "redis_url": "redis://redis.ticketing-prod.svc.cluster.local:6379/0",
+        "kafka_bootstrap_servers": "kafka.ticketing-prod.svc.cluster.local:9092",
+        "hpa_min_replicas": 5,
+        "hpa_max_replicas": 100,
+        "hpa_cpu_utilization": 75,
+        "hpa_memory_utilization": 80,
+        "keda_min_replicas": 2,
+        "keda_max_replicas": 32,
+        "keda_lag_threshold": "100"
+    },
+    "spine_leaf": {
+        "active_profile": "production",
+        "profiles": {
+            "production": {
+                "leaf_count": 8,
+                "spine_count": 2,
+                "spine_asn": 65000,
+                "leaf_asn_start": 65001,
+                "spine_loopback_start": 251,
+                "p2p_base_ip": "10.0.0.0"
+            },
+            "large_scale": {
+                "leaf_count": 48,
+                "spine_count": 4,
+                "spine_asn": 65000,
+                "leaf_asn_start": 65001,
+                "spine_loopback_start": 251,
+                "p2p_base_ip": "10.0.0.0"
+            }
+        }
+    }
+}

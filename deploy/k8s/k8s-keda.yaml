@@ -1,0 +1,24 @@
+# 🌌 针对投影器消费端的 KEDA (Kubernetes Event-driven Autoscaling)
+# ⚠️ THIS FILE IS AUTO-GENERATED FROM CMDB INVENTORY. DO NOT EDIT DIRECTLY.
+# 基于 Kafka 消费者组积压量 (Lag) 动态扩缩容 Projector
+# 如果高峰期退票/支付事件堆积在 Kafka 中，投影器自动横向拉起，自愈时差压缩至 100ms
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: ticketing-projector-keda
+  namespace: ticketing-prod
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ticketing-projector # 目标是我们的投影器消费端 Deployment
+  minReplicas: 2 # 至少双活热备
+  maxReplicas: 32 # 配合 Kafka Topic Partitions 最大扩至 32 个并行消费者
+  cooldownPeriod: 120 # 2分钟无积压后缩容
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: kafka.ticketing-prod.svc.cluster.local:9092
+      consumerGroup: 12306-projector-group
+      topic: ticket_events
+      lagThreshold: "100" # 只要该消费者组积压消息数超阈值，代表投影自愈时差变大，立刻启动快速弹性扩容！

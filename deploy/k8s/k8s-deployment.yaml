@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ticketing-web-api
+  namespace: ticketing-prod
+  labels:
+    app: ticketing-web-api
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: ticketing-web-api
+  template:
+    metadata:
+      labels:
+        app: ticketing-web-api
+    spec:
+      containers:
+      - name: web-api
+        image: ticketing_web:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        env:
+        - name: DATABASE_URL
+          value: "postgresql+asyncpg://postgres:postgres@pg-node-haproxy.ticketing-prod.svc.cluster.local:5000/ticketing_db"
+        - name: REDIS_URL
+          value: "redis://redis.ticketing-prod.svc.cluster.local:6379/0"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka.ticketing-prod.svc.cluster.local:9092"
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "2Gi"
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+        readinessProbe: # SRE 就绪性检测探针，确保 Pod 处于真正可用状态才接入 Service 流量
+          httpGet:
+            path: /api/v1/ops/health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe: # SRE 存活性检测探针，故障自动重启
+          httpGet:
+            path: /api/v1/ops/health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10

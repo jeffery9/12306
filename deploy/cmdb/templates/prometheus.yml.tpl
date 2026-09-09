@@ -10,7 +10,7 @@ scrape_configs:
   # ───────────────────────────────────────────────────────────────────────────
   - job_name: 'haproxy'
     static_configs:
-      - targets: ['haproxy:7000']
+      - targets: ['{{ haproxy_host }}:{{ haproxy_stats }}']
 
   # ───────────────────────────────────────────────────────────────────────────
   # 2. etcd DCS Consensus Metrics
@@ -18,9 +18,9 @@ scrape_configs:
   - job_name: 'etcd'
     static_configs:
       - targets:
-          - 'etcd1:2379'
-          - 'etcd2:2379'
-          - 'etcd3:2379'
+          - 'etcd1:{{ beijing_client_port }}'
+          - 'etcd2:{{ shanghai_client_port }}'
+          - 'etcd3:{{ wuhan_client_port }}'
 
   # ───────────────────────────────────────────────────────────────────────────
   # 3. PostgreSQL Database Metrics (Scraped via Postgres Exporters)
@@ -28,6 +28,6 @@ scrape_configs:
   - job_name: 'postgres'
     static_configs:
       - targets:
-          - 'pg-exporter-node1:9187'
-          - 'pg-exporter-node2:9187'
-          - 'pg-exporter-node3:9187'
+          - 'pg-exporter-node1:{{ exporter_port }}'
+          - 'pg-exporter-node2:{{ exporter_port }}'
+          - 'pg-exporter-node3:{{ exporter_port }}'

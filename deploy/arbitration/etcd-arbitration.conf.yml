@@ -1,0 +1,24 @@
+# 🌌 12306 武汉东西湖仲裁中心 etcd (Node 3) 生产级物理配置规范
+# ⚠️ THIS FILE IS AUTO-GENERATED FROM CMDB INVENTORY. DO NOT EDIT DIRECTLY.
+name: 'etcd3'
+data-dir: '/var/lib/etcd/etcd3.etcd'
+listen-peer-urls: 'http://10.200.0.30:2380' # 武汉内部物理网卡对等专线上联监听
+listen-client-urls: 'http://10.200.0.30:2379,http://127.0.0.1:2379' # 监听本地及京沪专线客户端请求
+
+# ───────────────── 跨地域集群化配额宣告 ─────────────────
+initial-advertise-peer-urls: 'http://10.200.0.30:2380' # 宣告本对等体地址
+advertise-client-urls: 'http://10.200.0.30:2379'      # 宣告本客户端寻址地址
+
+# ───────────────── 奇数对齐集群初始化信息 ─────────────────
+initial-cluster: 'etcd1=http://10.100.0.10:2380,etcd2=http://10.120.0.20:2380,etcd3=http://10.200.0.30:2380'
+initial-cluster-token: 'etcd-12306-2r3dc-token'
+initial-cluster-state: 'new'
+
+# ───────────────── SRE 高频心跳与选主时延参数 ─────────────────
+# 考虑到跨地域专线的物理距离限制（时延 RTT 约 11~15ms），高频心跳时延参数需要适当调大，防止误判
+heartbeat-interval: 250   # 毫秒。常态心跳时延，默认 100ms
+election-timeout: 1250    # 毫秒。选举超时判定，默认 1000ms
+
+# ───────────────── 物理性能与安全防护 ─────────────────
+quota-backend-bytes: 8589934592 # 限制 etcd KV 存储引擎配额为 8GB，防止租约锁过度积累溢出
+auto-compaction-retention: '1' # 每小时自动执行一次数据压缩碎片整理 (Compaction)

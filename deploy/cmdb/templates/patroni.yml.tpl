@@ -1,6 +1,6 @@
 # 🌌 Patroni HA Cluster Template Configuration Specification
 # ⚠️ THIS FILE IS AUTO-GENERATED FROM CMDB INVENTORY. DO NOT EDIT DIRECTLY.
-scope: ticketing-ha-cluster
+scope: {{ cluster_name }}
 namespace: /service
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,13 +55,13 @@ bootstrap:
 # REST API 端口（HAProxy 通过此端点判定谁是 Master/Replica）
 # ─────────────────────────────────────────────────────────────────────────────
 restapi:
-  listen: 0.0.0.0:8008
+  listen: 0.0.0.0:{{ patroni_rest_port }}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PostgreSQL Engine Process
 # ─────────────────────────────────────────────────────────────────────────────
 postgresql:
-  listen: 0.0.0.0:5432
+  listen: 0.0.0.0:{{ postgres_port }}
   authentication:
     superuser:
       username: postgres
