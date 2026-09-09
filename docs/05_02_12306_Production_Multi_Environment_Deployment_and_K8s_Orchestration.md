@@ -343,4 +343,116 @@ spec:
     *   两个数据中心物理关闭对端写事务落盘，专线复原后再触发 Kafka Outbox 的事件幂等归档与 TRS 状态对齐同步，100% 杜绝双写超卖。
 
 ---
+
+## 6. 生产级软件无缝升级与安全滚动发布规程 (Zero-Downtime Rolling Upgrade & Canary Deployment Manual)
+
+在 12306 亿级（100M RPS）极限过载生产环境下，系统的软件升级和部署过程必须具备毫秒级精度，**严禁因发布新版本而导致系统出现 502/503 网络抖动或售票异常中断**。本章详细规范了计算节点、数据库与 Redis 缓存的无缝软件升级规程：
+
+### A. 数据库 DDL “先扩张、后收缩”双版本向后兼容原则 (Database Schema Expand and Contract Pattern)
+为保障无缝滚动更新，**绝对禁止直接在生产发布时执行任何破坏性 DDL（如删除字段、重命名字段、或者改变现有约束）**。升级必须强制拆分为三个逻辑阶段进行物理对齐：
+
+```text
+========================================================================================================
+                  DATABASE SCHEMA "EXPAND & CONTRACT" ZERO-DOWNTIME ROLLOUT PHASE
+========================================================================================================
+
+  [ Phase 1: Expand ]  ──►  [ Phase 2: Rolling Update ]  ──►  [ Phase 3: Contract ]
+  (Database Master DDL)     (K8s Pods Transition)             (Post-Deployment Clean)
+  - Only ADD Nullable field - Spin up v2 Pods in parallel     - Old v1 code fully retired
+  - Old code reads/writes    - New code populates new field   - Run DDL to drop old column
+    old fields safely        - Old code falls back gracefully - Migrated data fully active
+
+========================================================================================================
+```
+
+1.  **EXPAND（扩张阶段）**：
+    *   在发布应用新版本前，先行对 PostgreSQL/PolarDB-X 执行非破坏性 DDL：**仅允许新增 Nullable 字段、新增新关联表、或放宽已有约束**。
+    *   此时，老版本代码（v1）继续运行，完全不受新增字段的影响；新版本代码（v2）则可以通过空值兼容性读取、写入该列。
+2.  **ROLLING UPDATE（滚动升级阶段）**：
+    *   执行 K8s 滚动更新（详见下文 B 节），新老实例（v1 与 v2）在容器集群中混合共存。
+    *   在此期间，若有老版本（v1）写入的新数据，背景异步数据补齐程序（Outbox Sync Service）会将其缺省转换、充填至新字段，确保全网双向对齐。
+3.  **CONTRACT（收缩清理阶段）**：
+    *   当全网 v1 应用实例全部退役、v2 版本稳定运行一周以上且无任何回滚风险后，方可执行破坏性清理：**安全运行 `ALTER TABLE ... DROP COLUMN` 卸载废弃旧列**。
+
+### B. K8s 无不可用滚动更新控制规约 (Zero-Unavailable Rolling Update Strategy)
+为了在升级过程中完美保全 12306 核心微服务的计算通量，对 K8s 核心 `Deployment` 施加极高保障级的滚动参数：
+
+```text
+========================================================================================================
+                          K8S ROLLING UPDATE TRAFFIC TRANSITION FLOW (MAXUNAVAILABLE: 0)
+========================================================================================================
+
+      [ Live Traffic ] ◄─── (100% Volume under 100M RPS)
+             │
+             ├───► [ Pod v1 (Running) ] (Traffic Active)
+             ├───► [ Pod v1 (Running) ] (Traffic Active)
+             ├───► [ Pod v1 (Running) ] (Traffic Active)
+             │
+             │     --- (K8s spins up Pod v2 in parallel) ---
+             ├───► [ Pod v2 (Starting) ] ──► (Readiness Probe Executing...) ──► [ BLOCK TRAFFIC ]
+             │                                                                         │
+             │     --- (Readiness Probe Passed: OK!)                                   ▼
+             └───────────────────────────────────────────────────────────────► [ JOIN SERVICE POOL ]
+                                                                                       │
+                   --- (Pod v1 gracefully shutdown with 15s PreStop delay)             ▼
+                   [ Pod v1 (Terminating) ] ◄─────────────────────────────────── [ REMOVE FROM POOL ]
+
+========================================================================================================
+```
+
+```yaml
+spec:
+  replicas: 100 # 以 100 节点超大规模为例
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%       # 滚动升级期间，允许最多额外创建 25% 的 Pod（即瞬间拉起 25 个 v2 Pod）
+      maxUnavailable: 0   # 滚动期间，不可用实例数严格为 0！旧实例退役必须等新实例就绪
+```
+
+#### SRE 防抖动就绪探测与优雅关机（Readiness & Graceful Shutdown）：
+1.  **Readiness Probe 刚性校验**：
+    *   新拉起的 v2 Pod 在启动前，必须强制等心跳探针 `/api/v1/ops/health` 连续 3 次返回 `200 OK` 后才加入 Service 路由端点。这杜绝了应用初始化、加载 Redis 缓存预热、解析 DNS 等耗时阶段向新 Pod 投递流量而产生的 502/503 报错。
+2.  **PreStop 生命周期延迟优雅下线**：
+    *   老 Pod 收到下线信号（SIGTERM）时，K8s 注册表可能还未完全刷新其 Endpoints 映射。因此必须在容器内挂载 **15秒 PreStop 自旋自适应挂起逻辑**：
+        ```yaml
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 15"]
+        ```
+    *   这保证了老 Pod 会继续服务已接入的旧 TCP 连接，彻底完成了流量的零掉包平滑交接。
+
+### C. 金丝雀灰度发布流量分流割接控制 (Canary Release Flow Gate)
+在大规模计算节点（如 Python, Go, Rust 三态混合集群）上线前，必须执行金丝雀（Canary）灰度割接：
+
+1.  **物理隔离部署（Canary Deployments）**：
+    *   在 K8s 中建立名为 `ticketing-web-api-canary` 的独立 Deployment，实例数配比为 `2%`，指向新版本镜像。
+2.  **网关权重引流割接（Canary Ingress Annotation）**：
+    *   在 Nginx Ingress 控制面通过注解方式，将全网真实流量的 `2%` 静态切分、倾斜引入该金丝雀群：
+        ```yaml
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: ticketing-web-ingress-canary
+          annotations:
+            nginx.ingress.kubernetes.io/canary: "true"
+            nginx.ingress.kubernetes.io/canary-by-header: "X-Canary-Test" # 支持白名单 Header 灰度验证
+            nginx.ingress.kubernetes.io/canary-weight: "2"                 # 强制 2% 流量先入
+        ```
+    *   SRE 持续监控 Prometheus 报警台中的 **金丝雀/生产异常错误率比率（Canary vs Production Error Ratio）**，确认无异常后，依次将 `canary-weight` 从 `2 -> 10 -> 50 -> 100` 阶梯式递进，最后删除金丝雀，直接用滚动更新全面覆盖生产主分支。
+
+### D. 秒级一键灾备应用回滚流程 (One-Click Safe Rollback Runbook)
+如果金丝雀或滚动更新升级阶段，系统抛出致命性能毛刺（如 Redis 内存泄漏或数据库死锁上升），SRE 必须立即执行**秒级一键无损物理回滚**：
+
+1.  **无状态微服务一键回滚**：
+    *   立刻下发底层回滚命令：
+        ```bash
+        kubectl rollout undo deployment/ticketing-web-api -n ticketing-prod
+        ```
+    *   由于 K8s 保留了旧版本的 ReplicaSet，该命令会瞬间（< 1s）将流量切回上一代稳定的 Pod。由于此时数据库仍处于双版本向后兼容的 EXPAND 状态，应用回滚不会产生任何数据物理撕裂，系统无缝自愈。
+2.  **回滚后的 forensic 数据取证（Post-Mortem）**：
+    *   保留受灾 v2 镜像的 1 个 Pod 处于 `Debug` 挂起状态（隔离流量），拉取其 coredump 物理文件，结合 Prometheus 日志面板和 Jaeger 追踪上下文开展闭环取证，消除线上幽灵风险。
+
+---
 **Deployment Specifications Ready | Bare-Metal & Cloud Blueprints Fully Formulated | SRE Certified**
