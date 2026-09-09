@@ -263,15 +263,18 @@ _AI 与人类工程师在 12306 这一千古难题上的这次极简交锋，证
 
 当并发达到 100,000,000 QPS 的史诗级海量狂澜时，单机与小集群终将面临物理算力的绝对瓶颈。基于本项目经过完美死锁剥离的微观理论内核，我们草拟了进军亿级的宏观扩展路线图：
 
-👉 **[点击阅读：《12306 性能基线报告、亿级超高并发容量规划与硬件选型白皮书》](./docs/05_05_12306_High_Concurrency_Capacity_Planning_and_Hardware_Sizing.md)**
-👉 **[点击阅读：《12306 高并发票务系统 — 运行成本估算与 TCO 财务预算白皮书》](./docs/05_06_12306_High_Concurrency_System_Cost_Modeling_and_Financial_Budget.md)**
-👉 **[点击阅读：《12306 跨地域多中心异地双活与高可用灾备架构白皮书》](./docs/05_07_12306_Multi_Region_Active_Active_Disaster_Recovery_Architecture.md)**
-👉 **[点击阅读：《12306 SRE 极限过载稳定性保障：多级限流、熔断降级与动态排队白皮书》](./docs/05_08_12306_SRE_Rate_Limiting_Circuit_Breaker_and_Dynamic_Queuing_Playbook.md)**
-👉 **[点击阅读：《12306 生产级系统高可用 SLA 估算与数学论证白皮书》](./docs/05_09_12306_High_Availability_SLA_Estimation_and_Mathematical_Proof.md)**
-👉 **[点击阅读：《12306 生产级 SRE 组织架构、On-Call 响应与混沌工程演练白皮书》](./docs/05_10_12306_SRE_Team_Building_and_OnCall_Operations_Manual.md)**
-👉 **[点击阅读：《12306 生产级 Prometheus & Grafana 监控与智能告警架构设计方案》](./docs/05_11_12306_SRE_Prometheus_Grafana_Monitoring_and_Alerting_Architecture.md)**
-👉 **[点击阅读：《12306 缓存击穿、穿透与雪崩风险评估与极致自愈设计白皮书》](./docs/05_12_12306_SRE_Cache_Breakdown_Penetration_Avalanche_Mitigation_Whitepaper.md)**
-👉 **[点击阅读：《12306 极速缓存效率优化与 Redis 单点故障（SPOF）高可用平稳降级设计白皮书》](./docs/05_13_12306_SRE_Cache_High_Efficiency_and_Anti_SPOF_Multi_Tier_Degradation_Architecture.md)**
-👉 **[点击阅读：《12306 生产级 PostgreSQL 高可用集群架构、性能部署与极致编程白皮书》](./docs/05_14_12306_DB_PostgreSQL_Cluster_Architecture_Deployment_and_Programming_Guide.md)**
+| 📖 进阶架构与 SRE 规格白皮书 | 📂 物理寻址与导航链接 (Nav Link) | 💡 SRE 运维与核心架构战点 |
+| :--- | :--- | :--- |
+| **00. 12306 全景索引与五阶段导航地图** | 🔗 **[00_01_master_index](./docs/00_01_12306_master_index_and_navigation_guide.md)** | 全程梳理 21 册独立技术白皮书的逻辑与生命周期归属。 |
+| **05. 亿级超高并发容量规划与硬件选型** | 🔗 **[05_05_capacity_sizing](./docs/05_05_12306_High_Concurrency_Capacity_Planning_and_Hardware_Sizing.md)** | 峰值并发计算、席位位图内存吞吐限制与磁盘 IOPS 极限推导。 |
+| **06. 高并发系统运行成本估算与财务预算** | 🔗 **[05_06_cost_modeling](./docs/05_06_12306_High_Concurrency_System_Cost_Modeling_and_Financial_Budget.md)** | 本地 IDC 与云端 AWS/腾讯云五年期建设采购 CapEx/OpEx 财务对比。 |
+| **07. 两地三中心异地双活与高可用灾备** | 🔗 **[05_07_disaster_recovery](./docs/05_07_12306_Multi_Region_Active_Active_Disaster_Recovery_Architecture.md)** | 车次 SOS 静态分片、**武汉东西湖 etcd 租约自锁 Fail-Closed 防脑裂**。 |
+| **08. SRE 极限过载保障：限流熔断与排队** | 🔗 **[05_08_rate_limiting](./docs/05_08_12306_SRE_Rate_Limiting_Circuit_Breaker_and_Dynamic_Queuing_Playbook.md)** | 边界漏桶、令牌桶多向限流防刷、动态虚拟排队平滑处理算法。 |
+| **09. 生产级系统高可用 SLA 估算与数学论证**| 🔗 **[05_09_sla_proof](./docs/05_09_12306_High_Availability_SLA_Estimation_and_Mathematical_Proof.md)** | 并/串联系统可用度、马尔可夫过程（Markov Chain）状态转移数学推导。|
+| **10. 生产级 SRE 组织架构与 On-Call 响应** | 🔗 **[05_10_on_call_manual](./docs/05_10_12306_SRE_Team_Building_and_OnCall_Operations_Manual.md)** | 故障 Severity 分级、On-Call 24/7 B/G 班表与 SLA 响应红线。 |
+| **11. Prometheus & Grafana 监控智能报警**| 🔗 **[05_11_prometheus_monitoring](./docs/05_11_12306_SRE_Prometheus_Grafana_Monitoring_and_Alerting_Architecture.md)** | 系统负荷、QPS、JVM 连接池 PromQL 指标采集与 PagerDuty 报警网格。 |
+| **12. 缓存击穿、穿透与雪崩极限自愈设计** | 🔗 **[05_12_cache_breakdown](./docs/05_12_12306_SRE_Cache_Breakdown_Penetration_Avalanche_Mitigation_Whitepaper.md)** | 随机 TTL 抖动、Singleflight/DCL 双重校验锁、主备热点数据防透。 |
+| **13. 缓存效率优化与 Redis 单点 SPOF 降级**| 🔗 **[05_13_cache_anti_spof](./docs/05_13_12306_SRE_Cache_High_Efficiency_and_Anti_SPOF_Multi_Tier_Degradation_Architecture.md)** | 内存预占与物理 Redis 断连时，系统向本地冷温介质过渡的降级标准。 |
+| **14. PostgreSQL 高可用 Patroni 物理部署** | 🔗 **[05_14_postgres_ha](./docs/05_14_12306_DB_PostgreSQL_Cluster_Architecture_Deployment_and_Programming_Guide.md)** | Patroni+etcd 共识备选主、流复制状态机、死锁 ASC 字母序自解。 |
 
 这些设计与白皮书详述了如何通过 **“CDN 智能边缘预热”、“排队削峰网关”、“MySQL 五百一十二等份细胞化分表（Cellular Sharding）” 以及 “CDC 增量解耦”** 的物理堆叠，配合高主频 Redis 节点、512 主从 MySQL SSD 磁盘矩阵、跨中心光环线的精确配置计算，以及云原生 HPA/KEDA 自动弹性缩容的年度降本 ROI 核算，在代码微观骨架不变的前提下，构建出承载地狱级峰值且极具财务性价比的数字长城。
