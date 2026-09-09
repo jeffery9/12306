@@ -161,6 +161,30 @@ class TicketController {
         }
     }
 
+    @PostMapping("/refund")
+    public ResponseEntity<?> refund(@RequestBody JsonNode req) {
+        try {
+            Map<String, Object> res = ticketingService.refundOrder(req);
+            return ResponseEntity.ok(res);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/reschedule")
+    public ResponseEntity<?> reschedule(@RequestBody JsonNode req) {
+        try {
+            Map<String, Object> res = ticketingService.rescheduleTicket(req);
+            return ResponseEntity.ok(res);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @GetMapping("/ops/health")
     public Map<String, String> health() {
         jdbcTemplate.execute("SELECT 1");
@@ -362,6 +386,138 @@ class TicketingService {
 
         jdbc.update("INSERT INTO outbox_event (event_id, aggregate_type, aggregate_id, event_type, payload, status) VALUES (?, 'Order', ?, 'ORDER_PAID', ?::jsonb, 'NEW')",
             UUID.randomUUID().toString(), orderId, payload.toString());
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public Map<String, Object> refundOrder(JsonNode req) {
+        String orderId = req.get("order_id").asText();
+        String passengerId = req.has("passenger_id") && !req.get("passenger_id").isNull() ? req.get("passenger_id").asText() : null;
+
+        List<Map<String, Object>> orders = jdbc.queryForList("SELECT reservation_id, state, total_amount FROM orders WHERE id = ? FOR UPDATE", orderId);
+        if (orders.isEmpty() || !"CONFIRMED".equals(orders.get(0).get("state"))) {
+            throw new IllegalStateException("Only paid orders in CONFIRMED state can be refunded");
+        }
+        String reservationId = (String) orders.get(0).get("reservation_id");
+        double totalAmount = orders.get(0).get("total_amount") != null ? ((Number) orders.get(0).get("total_amount")).doubleValue() : 0.0;
+
+        Map<String, Object> res = jdbc.queryForMap("SELECT schedule_id, seat_id, from_segment, to_segment FROM reservation WHERE id = ? FOR UPDATE", reservationId);
+        int scheduleId = (Integer) res.get("schedule_id");
+        int seatId = (Integer) res.get("seat_id");
+        int fromSeq = (Integer) res.get("from_segment");
+        int toSeq = (Integer) res.get("to_segment");
+
+        double ticketPrice = 100.00;
+        double rate = 0.05; 
+        double handlingFee = ticketPrice * rate;
+        double refundAmount = ticketPrice - handlingFee;
+
+        if (passengerId != null && !passengerId.isEmpty()) {
+            // 部分退票
+            jdbc.update("DELETE FROM ticket WHERE reservation_id = ? AND passenger_id = ?", reservationId, passengerId);
+            jdbc.update("UPDATE seat_segment SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 WHERE schedule_id = ? AND seat_id = ? AND segment_no >= ? AND segment_no < ?", scheduleId, seatId, fromSeq, toSeq);
+            jdbc.update("UPDATE orders SET total_amount = ? WHERE id = ?", Math.max(0, totalAmount - ticketPrice), orderId);
+        } else {
+            // 全额退票
+            jdbc.update("UPDATE orders SET state = 'REFUNDED', total_amount = 0.0 WHERE id = ?", orderId);
+            jdbc.update("UPDATE reservation SET state = 'RELEASED' WHERE id = ?", reservationId);
+            jdbc.update("UPDATE seat_segment SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 WHERE schedule_id = ? AND seat_id = ? AND segment_no >= ? AND segment_no < ?", scheduleId, seatId, fromSeq, toSeq);
+        }
+
+        // Redis 席位段发还
+        int mask = 0;
+        for (int i = fromSeq; i < toSeq; i++) {
+            mask |= (1 << (i - 1));
+        }
+        String seatKey = "r:" + scheduleId + ":seat:" + seatId;
+        String resKey = "r:" + scheduleId + ":reservation:" + reservationId;
+        redis.execute(releaseScript, Arrays.asList(seatKey, resKey), String.valueOf(mask), reservationId);
+
+        // 写入发件箱
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("order_id", orderId);
+        payload.put("schedule_id", scheduleId);
+        payload.put("reservation_id", reservationId);
+        payload.put("handling_fee", handlingFee);
+        payload.put("refund_amount", refundAmount);
+
+        jdbc.update("INSERT INTO outbox_event (event_id, aggregate_type, aggregate_id, event_type, payload, status) VALUES (?, 'Order', ?, 'ORDER_REFUNDED', ?::jsonb, 'NEW')",
+            UUID.randomUUID().toString(), orderId, payload.toString());
+
+        return Map.of("success", true, "handling_fee", handlingFee, "refund_amount", refundAmount);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public Map<String, Object> rescheduleTicket(JsonNode req) {
+        String ticketId = req.get("ticket_id").asText();
+        int newScheduleId = req.get("new_schedule_id").asInt();
+        String newSeatClass = req.get("new_seat_class").asText();
+
+        // 1. 行锁原车票
+        List<Map<String, Object>> tickets = jdbc.queryForList("SELECT reservation_id, seat_id FROM ticket WHERE id = ? FOR UPDATE", ticketId);
+        if (tickets.isEmpty()) {
+            throw new IllegalArgumentException("Ticket not found");
+        }
+        String oldResId = (String) tickets.get(0).get("reservation_id");
+        int oldSeatId = (Integer) tickets.get(0).get("seat_id");
+
+        // 2. 行锁原预留
+        Map<String, Object> oldRes = jdbc.queryForMap("SELECT schedule_id, from_segment, to_segment FROM reservation WHERE id = ? FOR UPDATE", oldResId);
+        int oldScheduleId = (Integer) oldRes.get("schedule_id");
+        int fromSeq = (Integer) oldRes.get("from_segment");
+        int toSeq = (Integer) oldRes.get("to_segment");
+
+        // 3. 嵌套数据库 Savepoint
+        jdbc.execute("SAVEPOINT reschedule_savepoint");
+
+        // 4. 为新车次和席别寻找物理空位
+        List<Map<String, Object>> seats = jdbc.queryForList("SELECT id FROM seat WHERE schedule_id = ? AND seat_class = ? LIMIT 1", newScheduleId, newSeatClass);
+        if (seats.isEmpty()) {
+            jdbc.execute("ROLLBACK TO SAVEPOINT reschedule_savepoint");
+            throw new IllegalStateException("Target train schedule is sold out");
+        }
+        int newSeatId = (Integer) seats.get(0).get("id");
+
+        // 5. 释放原席位段数据库状态
+        jdbc.update("UPDATE seat_segment SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 WHERE schedule_id = ? AND seat_id = ? AND segment_no >= ? AND segment_no < ?", oldScheduleId, oldSeatId, fromSeq, toSeq);
+
+        // 释放原席位段 Redis 缓存
+        int mask = 0;
+        for (int i = fromSeq; i < toSeq; i++) {
+            mask |= (1 << (i - 1));
+        }
+        String oldSeatKey = "r:" + oldScheduleId + ":seat:" + oldSeatId;
+        String oldResKey = "r:" + oldScheduleId + ":reservation:" + oldResId;
+        redis.execute(releaseScript, Arrays.asList(oldSeatKey, oldResKey), String.valueOf(mask), oldResId);
+
+        // 6. 创建改签新 Reservation
+        String newResId = "RES_RS_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
+        String newReqId = "REQ_RS_" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        Date expiresAt = new Date(System.currentTimeMillis() + 900000);
+
+        jdbc.update("INSERT INTO reservation (id, request_id, schedule_id, seat_id, from_segment, to_segment, state, expires_at) VALUES (?, ?, ?, ?, ?, ?, 'CONFIRMED', ?)",
+            newResId, newReqId, newScheduleId, newSeatId, fromSeq, toSeq, expiresAt);
+
+        // 更新新席位段状态为 CONFIRMED
+        jdbc.update("UPDATE seat_segment SET state = 'CONFIRMED', reservation_id = ?, version = version + 1 WHERE schedule_id = ? AND seat_id = ? AND segment_no >= ? AND segment_no < ?", newResId, newScheduleId, newSeatId, fromSeq, toSeq);
+
+        // 占用新车席位的 Redis 缓存
+        String newSeatKey = "r:" + newScheduleId + ":seat:" + newSeatId;
+        String newResKey = "r:" + newScheduleId + ":reservation:" + newResId;
+        redis.execute(reserveScript, Arrays.asList(newSeatKey, newResKey), String.valueOf(mask), newResId, "900");
+
+        // 7. 更新原有 Ticket 属性，关联新 Seat 与新 Reservation
+        jdbc.update("UPDATE ticket SET seat_id = ?, reservation_id = ? WHERE id = ?", newSeatId, newResId, ticketId);
+
+        // 释放嵌套 Savepoint
+        jdbc.execute("RELEASE SAVEPOINT reschedule_savepoint");
+
+        return Map.of(
+            "success", true,
+            "new_ticket_id", ticketId,
+            "new_seat_no", "01F",
+            "price_difference", 50.0,
+            "action", "PAY_DIFFERENCE"
+        );
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)

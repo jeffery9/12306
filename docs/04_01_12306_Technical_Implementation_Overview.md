@@ -3294,3 +3294,100 @@ Query Projection
 **如果这一条链路能够证明 `SUCCESS = 1、Oversell = 0、Duplicate Order = 0、MQ 重复消费结果不变、Redis 丢失可从 MySQL 重建`，再扩展到多座位、多车厢、多车次、支付、退票和分库分表。**
 
 这会比先搭建一个庞大的“12306 微服务集群”更符合工程上的 **Vertical Slice + First Principles + CQRS** 路线。
+
+
+# 82. 阶梯手续费部分退票算法 (Active Partial Refund Algorithm)
+
+在 “一单多同行人” 的实体架构下，12306 引入了基于车票粒度（Ticket-level）的物理退票和阶梯式手续费扣减机制。该算法同时协调底层 PostgreSQL 悲观行锁、Redis 席位 Bitmap 回滚，以及基于本地事件表（Transactional Outbox）的事件发布，从而实现毫秒级的余票自愈。
+
+## 82.1 阶梯退票费率滑动窗口公式
+
+系统在退票时动态比对退票发起日期与列车发车日期（`TrainSchedule.service_date`）的差值天数，并执行如下阶梯扣费：
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│                   阶梯退票手续费率计算公式                      │
+│                                                            │
+│     [差值天数 (D)] = [列车发车日期] - [退票发起日期]            │
+│                                                            │
+│                  ┌── D >= 15 天  ────────►  Rate = 0%      │
+│                  ├── 2 <= D < 15 天 ─────►  Rate = 5%      │
+│     [Fee Rate] = ┼── 1 <= D < 2 天  ─────►  Rate = 10%     │
+│                  └── D < 1 天    ────────►  Rate = 20%     │
+│                                                            │
+│     [手续费 (Fee)] = [车票票价] * [Fee Rate]                  │
+└────────────────────────────────────────────────────────────┘
+```
+
+## 82.2 一单多票下的部分退票事务流程
+
+当一个订单中包含多个乘车人（例如同行旅客），支持其中某个乘车人单独退票，而不影响其他人的订票。执行时，通过悲观锁（`FOR UPDATE ASC`）保障在物理退还时绝不发生死锁：
+
+1. **订单锁座行锁持有**：
+   - 物理锁定订单 `Orders`：`SELECT * FROM orders WHERE id = :order_id FOR UPDATE`
+   - 物理锁定预订 `Reservation`：`SELECT * FROM reservation WHERE id = :res_id FOR UPDATE`
+2. **定位并物理删除该乘车人的 Ticket**：
+   - 从 `ticket` 表锁定并删除：`SELECT * FROM ticket WHERE reservation_id = :res_id AND passenger_id = :passenger_id FOR UPDATE`
+3. **退还区间席位段与 Redis 缓存倒带**：
+   - 锁定旧车票关联的所有物理席位段：`SELECT * FROM seat_segment WHERE schedule_id = :sched_id AND seat_id = :seat_id FOR UPDATE`
+   - 将对应区间的席位状态置为 `AVAILABLE`，并清除 `reservation_id`。
+   - 对 Redis 端调用 Lua 脚本释放比特位：
+     `new_occupied = occupied & ~ReleaseMask`
+4. **差额计算与退款入账**：
+   - 计算实扣退票费：`fee = ticket.price * rate`
+   - 实退乘客金额：`refund_amount = ticket.price - fee`
+   - 动态更新原订单总金额：`order.total_amount = max(0, order.total_amount - ticket.price)`
+5. **Transactional Outbox 写入**：
+   - 写入 `ORDER_REFUNDED` 事件，下游 Projector 异步监听并在毫秒级内重构公网及缓存的余票数（Query Model）。
+   - 立刻调起候补队列自愈机制（Waitlist Auto-Fulfillment），检测当前释放的车厢区间是否有排在首位的候补单。若有，按 FIFO 队列和 Late-binding 穿透碰撞检验，秒级自动兑现划拨新预订。
+
+
+# 83. 数据库嵌套保存点 (Savepoint) 原子无损改签机制 (Atomic Reschedule Transaction Flow)
+
+车票改签（Reschedule）是典型的高风险跨车次/跨时间跨度分布式状态流转场景。为了保证在目标改签车次售罄、改签失败时，“旧票绝对不丢，新座位绝不超卖”，12306 基于 RDBMS 嵌套子事务（Nested Savepoint）设计了“退旧买新”的强一致性原子事务链路。
+
+## 83.1 嵌套子事务原子回滚流程
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    基于 MySQL Savepoint 的原子改签事务流程                  │
+│                                                                         │
+│  1. 悲观锁加锁:                                                           │
+│     SELECT ... FROM ticket WHERE id = :ticket_id FOR UPDATE             │
+│                                                                         │
+│  2. 创建嵌套保存点 (SQL Nest Savepoint):                                   │
+│     SAVEPOINT reschedule_savepoint;                                     │
+│                                                                         │
+│  3. 尝试预订新票 (Call reserve_ticket):                                   │
+│     - 物理更新 Redis Bitmap 占座 (LUA reserve_seat)                      │
+│     - 物理插入数据库 SeatSegment 并置状态为 "CONFIRMED"                     │
+│                                                                         │
+│  4. 并发与余票判断:                                                       │
+│     - 成功? ─────► 释放旧票席位 ──► 计算价格差 (Price Diff) ──► 提交事务       │
+│     - 失败? (无票/实名碰撞/超时) ────────────────────────────────┐       │
+│                                                                │       │
+│  5. 物理回滚保存点 (SQL Nest Rollback):                                 │       │
+│     - 释放新锁 ──► 还原 Redis 与 DB 状态 ◄────── ROLLBACK TO ─────┘       │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+## 83.2 结算差价多退少补规则
+
+在改签成功时，系统将动态比对新老车票的单价并进行差异化账务合并：
+
+* **补交差价 (PAY_DIFFERENCE)**：若 `new_price > old_price`，计算 `price_diff = new_price - old_price`。该 Ticket 关联的原 Order 金额动态调增：`order.total_amount += price_diff`，用户端发起支付合并流程。
+* **退还差额 (REFUND_DIFFERENCE)**：若 `new_price < old_price`，计算 `price_diff = old_price - new_price`。自动原路退还差价：`order.total_amount -= price_diff`，并自动生成一笔退款事件。
+* **平价改签**：`price_diff = 0`，不涉及财务流水。
+
+## 83.3 多乘客订单分裂机制 (Order Splitting)
+
+如果用户最初是同行合并订票（例如一张订单包含 A、B、C 三张票），现在 A 旅客需要单人发起改签：
+
+1. **订单分裂提取**：
+   - 自动生成一笔全新订单：`ORD_RS_XXXXXXXXXXXX`，将 A 旅客的旧 Ticket 和新 Reservation 转移关联至该新订单下。
+   - 新订单总价设定为该车票的新单价。
+2. **老订单缩容**：
+   - 老订单中将 A 的 Ticket 移除，总金额动态调减 A 的旧车票价格。
+   - 最终 B、C 的席位及订单继续保持完全不变，实现了乘车人级改签粒度的敏捷物理隔离。
+

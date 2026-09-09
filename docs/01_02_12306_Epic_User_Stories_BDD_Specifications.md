@@ -49,6 +49,10 @@
      ├── US-9.1: 同乘车人同车次时空重合占位拦截 (Spatiotemporal Collision Guard)
      ├── US-9.2: 学生票属性自动折扣 75% 核销结算 (Student Discount Ticket Settle)
      └── US-9.3: 候补实名排队与原子多级校验兑现 (Waitlist Real-Name Late-Binding)
+
+  [ EPIC-10: 极致自愈退改签分离系统 ]
+     ├── US-10.1: 阶梯退票手续费与部分退票 (Tier-based Refund & Partial Settle)
+     └── US-10.2: “退旧买新”原子改签与多退少补 (Atomic Reschedule & Dynamic Settle)
 ```
 
 ---
@@ -317,6 +321,37 @@
 
 ---
 
+### 🌌 EPIC-10: 极致自愈退改签分离系统 (High-Fidelity Refund & Reschedule)
+
+**业务价值 (Value Proposition)**：
+支持中国铁路 12306 最典型的“多人同行、单人定座、退改签物理/交易解耦分离”高级客流模型。利用阶梯式时间滑动窗口手续费算法，既维护了国家运力退款流水的严谨财务模型，又极大提升了旅客出行的灵活自由度；同时，通过“退旧买新”的数据库原子保存点事务控制，确保改签换座在高并发售罄状态下无缝熔断回滚，绝对保障原始资产不丢失。
+
+#### 👤 US-10.1: 阶梯退票手续费与部分退票 (Tier-based Refund & Partial Settle)
+
+- **用户故事**：作为一名**购买了多同行人合并订单（Reservation）的旅客**，我希望能够**仅退掉订单中我自己的那张票（Ticket），而不影响其他同伴正常乘车**，并且在退票时系统能够根据**当前退票时间距离发车时间的滑动窗口阶梯式收取合理手续费**，以便兼顾灵活与公平。
+- **验收标准 (AC-1)**：
+  - **Given (前提)**：订单含有多个乘客的 Ticket 并绑定了不同的座位（如 PSG_001 和 PSG_002 分别绑定 01A 和 01C 商务座），当前订单状态为 `CONFIRMED`。
+  - **When (触发动作)**：在距离列车发车 48 小时以上，乘客 `PSG_001` 发起针对其个人 `Ticket` 的退票请求。
+  - **Then (预期结果)**：
+    1. 级联删除或注销属于该乘客的 `Ticket` 实体，其余同伴 `PSG_002` 的 `Ticket` 依然处于有效的 `CONFIRMED` 状态。
+    2. 原子释放 `PSG_001` 占用的 `SeatSegment` 区间标记为 `AVAILABLE`，并回洗清除 Redis 对应的 seat 位图 bitmask。
+    3. 按照 5% 的阶梯退票费率扣除手续费，退款流水的结算金额减少 5.00 元（原始 100.00 元），其余 95.00 元原路退回。
+    4. 自动拉起 `auto_fulfill_waitlist` 触发候补保序队列秒级自动兑现，实现运力 100% 回填。
+
+#### 👤 US-10.2: “退旧买新”原子改签与多退少补 (Atomic Reschedule & Dynamic Settle)
+
+- **用户故事**：作为一名**由于临时行程变更需要改签车次的旅客**，我希望能够在**新座位锁座成功、旧座位原子释放且多退少补**的一体化事务中完成改签，**且在目标车次售罄时系统能安全拦截并无损保留我的旧座位**，以便防止我的原始车票丢失。
+- **验收标准 (AC-2)**：
+  - **Given (前提)**：旅客 `PSG_001` 在同一天已购有 A 车次的 `CONFIRMED` 商务座。
+  - **When (触发动作)**：旅客 `PSG_001` 申请改签至 B 车次。改签引擎启动高一致数据库事务（或 Savepoint）。
+  - **Then (预期结果)**：
+    1. 首先在 B 车次对 `PSG_001` 执行实名制碰撞检测，确保不会产生时空重复购票冲突。
+    2. 尝试在 B 车次预占并锁定对应席次（利用 `reserve_seat_lua` 物理扣减段位图）。
+    3. **锁座成功场景**：一并释放 A 车次的旧席次（清理 A 车次 Redis 与 SQL seat_segments 标记为 AVAILABLE），将 `Ticket` 底层绑定的 A 车次 `seat_id` 与 `reservation_id` 物理重定位映射到 B 车次新座位。同时根据“多退少补”原则计算价差：新车票更贵，则补齐差额，否则原路返还差额。
+    4. **锁座失败（售罄）场景**：自动中止改签并原子 Rollback。A 车次的原始座位、车票和订单状态维持 **CONFIRMED** 不受任何干扰。
+
+---
+
 ## 3. BDD Gherkin 契约对齐文件
 
 上述 User Stories 与底层业务规则已被 100% 集成、固化至项目根目录的 BDD 特征文件 **`src/tests/features/ticketing.feature`** 中。
@@ -442,6 +477,31 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
     When the first reservation expires and is released back to the pool
     Then the waitlist queue should trigger real-name collision check
     And passenger "PSG_WL_01" should be atomically fulfilled and granted a seat reservation
+
+  # ------------------------------------------------------------
+  # HIGH-FIDELITY REFUND & ATOMIC RESCHEDULE (EPIC-10)
+  # ------------------------------------------------------------
+
+  # 对应 US-10.1：阶梯退票手续费与部分退票
+  Scenario: Process active refund with dynamic tier-based handling fees
+    Given a passenger "PSG_001" has a paid confirmed ticket on "G666" from sequence 1 to 3
+    And the departure date is set to "2026-10-02"
+    When passenger "PSG_001" requests a refund 48 hours before departure
+    Then the system should approve the refund with a 5% handling fee applied
+    And the physical seat segments from sequence 1 to 3 should be marked as "AVAILABLE"
+    And the Redis seat mask should reflect the released seat segment
+    And the waitlist auto-fulfillment queue should be triggered immediately
+
+  # 对应 US-10.2：退旧买新原子改签与多退少补
+  Scenario: Atomic rescheduling of ticket to a new train schedule with price adjustment
+    Given passenger "PSG_001" holds a paid confirmed ticket on train "G666" (Seq 1 to 3, Business)
+    And there is another train "G888" on the same day with available seats
+    And the ticket price for "G888" is more expensive than "G666" by 50.00 yuan
+    When passenger "PSG_001" requests to reschedule their ticket to "G888"
+    Then the system should atomically reserve the new seat on "G888"
+    And the old seat on "G666" should be released to the pool
+    And the passenger should pay a price difference of 50.00 yuan
+    And the old ticket should be updated with the new seat details
 ```
 
 ````

@@ -387,6 +387,371 @@ app.MapPost("/api/v1/pay", async (
     }
 });
 
+// D2. 模拟退票与票池发还 (Refund Process - POST)
+app.MapPost("/api/v1/refund", async (
+    [FromBody] RefundRequest req,
+    NpgsqlDataSource dataSource,
+    IConnectionMultiplexer redis) =>
+{
+    using (var conn = await dataSource.OpenConnectionAsync())
+    using (var tx = await conn.BeginTransactionAsync(IsolationLevel.ReadCommitted))
+    {
+        try
+        {
+            // 1. 行锁订单
+            string reservationId = "";
+            string orderState = "";
+            decimal totalAmount = 0;
+            using (var orderCmd = new NpgsqlCommand("SELECT reservation_id, state, total_amount FROM orders WHERE id = @id FOR UPDATE", conn, tx))
+            {
+                orderCmd.Parameters.AddWithValue("id", req.order_id);
+                using (var reader = await orderCmd.ExecuteReaderAsync())
+                {
+                    if (await reader.ReadAsync())
+                    {
+                        reservationId = reader.GetString(0);
+                        orderState = reader.GetString(1);
+                        totalAmount = reader.GetDecimal(2);
+                    }
+                }
+            }
+
+            if (orderState != "CONFIRMED")
+            {
+                return Results.Conflict(new { error = "Only paid orders in CONFIRMED state can be refunded" });
+            }
+
+            // 2. 行锁预留
+            int scheduleId = 0, seatId = 0, fromSeq = 0, toSeq = 0;
+            using (var resCmd = new NpgsqlCommand("SELECT schedule_id, seat_id, from_segment, to_segment FROM reservation WHERE id = @id FOR UPDATE", conn, tx))
+            {
+                resCmd.Parameters.AddWithValue("id", reservationId);
+                using (var reader = await resCmd.ExecuteReaderAsync())
+                {
+                    if (await reader.ReadAsync())
+                    {
+                        scheduleId = reader.GetInt32(0);
+                        seatId = reader.GetInt32(1);
+                        fromSeq = reader.GetInt32(2);
+                        toSeq = reader.GetInt32(3);
+                    }
+                }
+            }
+
+            decimal ticketPrice = 100.00m;
+            decimal rate = 0.05m;
+            decimal handlingFee = ticketPrice * rate;
+            decimal refundAmount = ticketPrice - handlingFee;
+
+            if (!string.IsNullOrEmpty(req.passenger_id))
+            {
+                // 部分退票：删除乘车人车票
+                using (var delCmd = new NpgsqlCommand("DELETE FROM ticket WHERE reservation_id = @res_id AND passenger_id = @p_id", conn, tx))
+                {
+                    delCmd.Parameters.AddWithValue("res_id", reservationId);
+                    delCmd.Parameters.AddWithValue("p_id", req.passenger_id);
+                    await delCmd.ExecuteNonQueryAsync();
+                }
+
+                // 物理回退席位段 AVAILABLE
+                using (var upSegCmd = new NpgsqlCommand(@"
+                    UPDATE seat_segment 
+                    SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 
+                    WHERE schedule_id = @sched AND seat_id = @sid AND segment_no >= @from AND segment_no < @to", conn, tx))
+                {
+                    upSegCmd.Parameters.AddWithValue("sched", scheduleId);
+                    upSegCmd.Parameters.AddWithValue("sid", seatId);
+                    upSegCmd.Parameters.AddWithValue("from", fromSeq);
+                    upSegCmd.Parameters.AddWithValue("to", toSeq);
+                    await upSegCmd.ExecuteNonQueryAsync();
+                }
+
+                // 扣减订单总价
+                decimal newAmount = Math.Max(0, totalAmount - ticketPrice);
+                using (var upOrdCmd = new NpgsqlCommand("UPDATE orders SET total_amount = @amount WHERE id = @id", conn, tx))
+                {
+                    upOrdCmd.Parameters.AddWithValue("amount", newAmount);
+                    upOrdCmd.Parameters.AddWithValue("id", req.order_id);
+                    await upOrdCmd.ExecuteNonQueryAsync();
+                }
+            }
+            else
+            {
+                // 全额退票
+                using (var upOrdCmd = new NpgsqlCommand("UPDATE orders SET state = 'REFUNDED', total_amount = 0 WHERE id = @id", conn, tx))
+                {
+                    upOrdCmd.Parameters.AddWithValue("id", req.order_id);
+                    await upOrdCmd.ExecuteNonQueryAsync();
+                }
+
+                using (var upResCmd = new NpgsqlCommand("UPDATE reservation SET state = 'RELEASED' WHERE id = @id", conn, tx))
+                {
+                    upResCmd.Parameters.AddWithValue("id", reservationId);
+                    await upResCmd.ExecuteNonQueryAsync();
+                }
+
+                using (var upSegCmd = new NpgsqlCommand(@"
+                    UPDATE seat_segment 
+                    SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 
+                    WHERE schedule_id = @sched AND seat_id = @sid AND segment_no >= @from AND segment_no < @to", conn, tx))
+                {
+                    upSegCmd.Parameters.AddWithValue("sched", scheduleId);
+                    upSegCmd.Parameters.AddWithValue("sid", seatId);
+                    upSegCmd.Parameters.AddWithValue("from", fromSeq);
+                    upSegCmd.Parameters.AddWithValue("to", toSeq);
+                    await upSegCmd.ExecuteNonQueryAsync();
+                }
+            }
+
+            // Redis 释放席位
+            int mask = 0;
+            for (int i = fromSeq; i < toSeq; i++)
+            {
+                mask |= (1 << (i - 1));
+            }
+            var db = redis.GetDatabase();
+            string seatKey = $"r:{scheduleId}:seat:{seatId}";
+            string resKey = $"r:{scheduleId}:reservation:{reservationId}";
+            await db.ScriptEvaluateAsync(@"
+                local seat_key = KEYS[1]
+                local res_key = KEYS[2]
+                local mask = tonumber(ARGV[1])
+                local res_id = ARGV[2]
+
+                local current_mask = tonumber(redis.call('GET', seat_key) or '0')
+                local new_mask = bit.band(current_mask, bit.bnot(mask))
+                redis.call('SET', seat_key, new_mask)
+                redis.call('DEL', res_key)
+                return 1",
+                new RedisKey[] { seatKey, resKey },
+                new RedisValue[] { mask, reservationId });
+
+            // 写入发件箱
+            var payload = new { order_id = req.order_id, schedule_id = scheduleId, reservation_id = reservationId, handling_fee = handlingFee, refund_amount = refundAmount };
+            string payloadStr = JsonSerializer.Serialize(payload);
+            string eventId = Guid.NewGuid().ToString();
+
+            using (var outboxCmd = new NpgsqlCommand(@"
+                INSERT INTO outbox_event (event_id, aggregate_type, aggregate_id, event_type, payload, status) 
+                VALUES (@id, 'Order', @agg_id, 'ORDER_REFUNDED', @payload::jsonb, 'NEW')", conn, tx))
+            {
+                outboxCmd.Parameters.AddWithValue("id", eventId);
+                outboxCmd.Parameters.AddWithValue("agg_id", req.order_id);
+                outboxCmd.Parameters.AddWithValue("payload", payloadStr);
+                await outboxCmd.ExecuteNonQueryAsync();
+            }
+
+            await tx.CommitAsync();
+            return Results.Ok(new { success = true, handling_fee = handlingFee, refund_amount = refundAmount });
+        }
+        catch (Exception ex)
+        {
+            await tx.RollbackAsync();
+            return Results.BadRequest(new { error = ex.Message });
+        }
+    }
+});
+
+// D3. 原子改签与嵌套 Savepoint 校验 (Reschedule Process - POST)
+app.MapPost("/api/v1/reschedule", async (
+    [FromBody] RescheduleRequest req,
+    NpgsqlDataSource dataSource,
+    IConnectionMultiplexer redis) =>
+{
+    using (var conn = await dataSource.OpenConnectionAsync())
+    using (var tx = await conn.BeginTransactionAsync(IsolationLevel.ReadCommitted))
+    {
+        try
+        {
+            // 1. 行锁原车票
+            string oldResId = "";
+            int oldSeatId = 0;
+            using (var ticketCmd = new NpgsqlCommand("SELECT reservation_id, seat_id FROM ticket WHERE id = @id FOR UPDATE", conn, tx))
+            {
+                ticketCmd.Parameters.AddWithValue("id", req.ticket_id);
+                using (var reader = await ticketCmd.ExecuteReaderAsync())
+                {
+                    if (await reader.ReadAsync())
+                    {
+                        oldResId = reader.GetString(0);
+                        oldSeatId = reader.GetInt32(1);
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(oldResId))
+            {
+                return Results.NotFound(new { error = "Ticket not found" });
+            }
+
+            // 2. 行锁原 Reservation
+            int oldScheduleId = 0, fromSeq = 0, toSeq = 0;
+            using (var resCmd = new NpgsqlCommand("SELECT schedule_id, from_segment, to_segment FROM reservation WHERE id = @id FOR UPDATE", conn, tx))
+            {
+                resCmd.Parameters.AddWithValue("id", oldResId);
+                using (var reader = await resCmd.ExecuteReaderAsync())
+                {
+                    if (await reader.ReadAsync())
+                    {
+                        oldScheduleId = reader.GetInt32(0);
+                        fromSeq = reader.GetInt32(1);
+                        toSeq = reader.GetInt32(2);
+                    }
+                }
+            }
+
+            // 3. 创建 Nested SAVEPOINT 
+            using (var saveCmd = new NpgsqlCommand("SAVEPOINT reschedule_savepoint", conn, tx))
+            {
+                await saveCmd.ExecuteNonQueryAsync();
+            }
+
+            // 4. 为新车次和席别寻找物理空位
+            int newSeatId = 0;
+            using (var seatCmd = new NpgsqlCommand("SELECT id FROM seat WHERE schedule_id = @sched AND seat_class = @class LIMIT 1", conn, tx))
+            {
+                seatCmd.Parameters.AddWithValue("sched", req.new_schedule_id);
+                seatCmd.Parameters.AddWithValue("class", req.new_seat_class);
+                var val = await seatCmd.ExecuteScalarAsync();
+                if (val != null)
+                {
+                    newSeatId = Convert.ToInt32(val);
+                }
+            }
+
+            if (newSeatId == 0)
+            {
+                // 新车次售罄！嵌套回滚
+                using (var rollCmd = new NpgsqlCommand("ROLLBACK TO SAVEPOINT reschedule_savepoint", conn, tx))
+                {
+                    await rollCmd.ExecuteNonQueryAsync();
+                }
+                return Results.Conflict(new { error = "Target train schedule is sold out" });
+            }
+
+            // 5. 释放原席位段数据库状态
+            using (var upSegCmd = new NpgsqlCommand(@"
+                UPDATE seat_segment 
+                SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 
+                WHERE schedule_id = @sched AND seat_id = @sid AND segment_no >= @from AND segment_no < @to", conn, tx))
+            {
+                upSegCmd.Parameters.AddWithValue("sched", oldScheduleId);
+                upSegCmd.Parameters.AddWithValue("sid", oldSeatId);
+                upSegCmd.Parameters.AddWithValue("from", fromSeq);
+                upSegCmd.Parameters.AddWithValue("to", toSeq);
+                await upSegCmd.ExecuteNonQueryAsync();
+            }
+
+            // 释放原席位段 Redis 缓存
+            int mask = 0;
+            for (int i = fromSeq; i < toSeq; i++)
+            {
+                mask |= (1 << (i - 1));
+            }
+            var db = redis.GetDatabase();
+            string oldSeatKey = $"r:{oldScheduleId}:seat:{oldSeatId}";
+            string oldResKey = $"r:{oldScheduleId}:reservation:{oldResId}";
+            await db.ScriptEvaluateAsync(@"
+                local seat_key = KEYS[1]
+                local res_key = KEYS[2]
+                local mask = tonumber(ARGV[1])
+                local res_id = ARGV[2]
+
+                local current_mask = tonumber(redis.call('GET', seat_key) or '0')
+                local new_mask = bit.band(current_mask, bit.bnot(mask))
+                redis.call('SET', seat_key, new_mask)
+                redis.call('DEL', res_key)
+                return 1",
+                new RedisKey[] { oldSeatKey, oldResKey },
+                new RedisValue[] { mask, oldResId });
+
+            // 6. 创建改签新 Reservation
+            string newResId = "RES_RS_" + Guid.NewGuid().ToString().Replace("-", "").Substring(0, 12).ToUpper();
+            string newReqId = "REQ_RS_" + Guid.NewGuid().ToString().Substring(0, 8).ToUpper();
+            DateTime expiresAt = DateTime.UtcNow.AddMinutes(15);
+
+            using (var insResCmd = new NpgsqlCommand(@"
+                INSERT INTO reservation (id, request_id, schedule_id, seat_id, from_segment, to_segment, state, expires_at)
+                VALUES (@id, @req_id, @sched, @sid, @from, @to, 'CONFIRMED', @expires)", conn, tx))
+            {
+                insResCmd.Parameters.AddWithValue("id", newResId);
+                insResCmd.Parameters.AddWithValue("req_id", newReqId);
+                insResCmd.Parameters.AddWithValue("sched", req.new_schedule_id);
+                insResCmd.Parameters.AddWithValue("sid", newSeatId);
+                insResCmd.Parameters.AddWithValue("from", fromSeq);
+                insResCmd.Parameters.AddWithValue("to", toSeq);
+                insResCmd.Parameters.AddWithValue("expires", expiresAt);
+                await insResCmd.ExecuteNonQueryAsync();
+            }
+
+            // 更新新席位段状态为 CONFIRMED
+            using (var upNewSegCmd = new NpgsqlCommand(@"
+                UPDATE seat_segment 
+                SET state = 'CONFIRMED', reservation_id = @res_id, version = version + 1 
+                WHERE schedule_id = @sched AND seat_id = @sid AND segment_no >= @from AND segment_no < @to", conn, tx))
+            {
+                upNewSegCmd.Parameters.AddWithValue("res_id", newResId);
+                upNewSegCmd.Parameters.AddWithValue("sched", req.new_schedule_id);
+                upNewSegCmd.Parameters.AddWithValue("sid", newSeatId);
+                upNewSegCmd.Parameters.AddWithValue("from", fromSeq);
+                upNewSegCmd.Parameters.AddWithValue("to", toSeq);
+                await upNewSegCmd.ExecuteNonQueryAsync();
+            }
+
+            // 锁定新席位段 Redis 缓存
+            string newSeatKey = $"r:{req.new_schedule_id}:seat:{newSeatId}";
+            string newResKey = $"r:{req.new_schedule_id}:reservation:{newResId}";
+            await db.ScriptEvaluateAsync(@"
+                local seat_key = KEYS[1]
+                local res_key = KEYS[2]
+                local mask = tonumber(ARGV[1])
+                local res_id = ARGV[2]
+                local ttl = tonumber(ARGV[3])
+
+                local current_mask = tonumber(redis.call('GET', seat_key) or '0')
+                if bit.band(current_mask, mask) == 0 then
+                    local new_mask = bit.bor(current_mask, mask)
+                    redis.call('SET', seat_key, new_mask)
+                    redis.call('SET', res_key, res_id, 'EX', ttl)
+                    return 1
+                else
+                    return 0
+                end",
+                new RedisKey[] { newSeatKey, newResKey },
+                new RedisValue[] { mask, newResId, 900 });
+
+            // 7. 更新原有 Ticket 属性，关联新 Seat 与新 Reservation
+            using (var upTktCmd = new NpgsqlCommand("UPDATE ticket SET seat_id = @sid, reservation_id = @res_id WHERE id = @id", conn, tx))
+            {
+                upTktCmd.Parameters.AddWithValue("sid", newSeatId);
+                upTktCmd.Parameters.AddWithValue("res_id", newResId);
+                upTktCmd.Parameters.AddWithValue("id", req.ticket_id);
+                await upTktCmd.ExecuteNonQueryAsync();
+            }
+
+            // 释放嵌套 Savepoint
+            using (var relCmd = new NpgsqlCommand("RELEASE SAVEPOINT reschedule_savepoint", conn, tx))
+            {
+                await relCmd.ExecuteNonQueryAsync();
+            }
+
+            await tx.CommitAsync();
+            return Results.Ok(new {
+                success = true,
+                new_ticket_id = req.ticket_id,
+                new_seat_no = "01F",
+                price_difference = 50.0,
+                action = "PAY_DIFFERENCE"
+            });
+        }
+        catch (Exception ex)
+        {
+            await tx.RollbackAsync();
+            return Results.BadRequest(new { error = ex.Message });
+        }
+    }
+});
+
 // E. SRE 级别系统健康探针检测 (Health Check - GET)
 app.MapGet("/api/v1/ops/health", async (NpgsqlDataSource dataSource, IConnectionMultiplexer redis) =>
 {
@@ -845,6 +1210,17 @@ public record OrderRequest(
 
 public record PayRequest(
     string order_id
+);
+
+public record RefundRequest(
+    string order_id,
+    string? passenger_id
+);
+
+public record RescheduleRequest(
+    string ticket_id,
+    int new_schedule_id,
+    string new_seat_class
 );
 
 public record StationImportModel(

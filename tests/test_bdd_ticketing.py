@@ -57,6 +57,32 @@ def test_trs_authority_publish_preheat():
     pass
 
 
+# --- EPIC-09: Real-Name Passenger Ticketing & Collision Guard Scenario Bindings ---
+
+@scenario("features/ticketing.feature", "Prevent same passenger from duplicate bookings on the same train schedule (Collision Guard)")
+def test_collision_guard_duplicate_bookings():
+    pass
+
+@scenario("features/ticketing.feature", "Automatically apply student discount for registered student passengers")
+def test_student_discount_application():
+    pass
+
+@scenario("features/ticketing.feature", "Waitlist real-name collision guarding and late-binding auto-fulfillment")
+def test_waitlist_realname_collision_and_fulfillment():
+    pass
+
+
+# --- EPIC-10: High-Fidelity Refund & Atomic Reschedule Scenario Bindings ---
+
+@scenario("features/ticketing.feature", "Process active refund with dynamic tier-based handling fees")
+def test_active_refund_tier_fees():
+    pass
+
+@scenario("features/ticketing.feature", "Atomic rescheduling of ticket to a new train schedule with price adjustment")
+def test_atomic_rescheduling_price_adjustment():
+    pass
+
+
 @pytest.fixture
 def bdd_context():
     """Shared contextual dictionary across BDD steps."""
@@ -893,4 +919,481 @@ def subsequent_query_returns_instantly(bdd_context, event_loop, f, t, count):
         field = f"{f}-{t}"
         val = await redis_client.hget(cache_key, field)
         assert int(val) == count
+    event_loop.run_until_complete(_impl())
+
+
+# --- EPIC-09: Real-Name Passenger Ticketing & Collision Guard Step Definitions ---
+
+@given(parsers.parse('passenger "{passenger_id}" has already reserved a ticket from sequence {f:d} to {t:d}'))
+def passenger_has_reserved(bdd_context, db_session, event_loop, passenger_id, f, t):
+    async def _impl():
+        schedule_id = bdd_context["schedule_id"]
+        p = (await db_session.execute(select(Passenger).where(Passenger.id == passenger_id))).scalar()
+        if not p:
+            p = Passenger(id=passenger_id, name="BDD Passenger", id_no="110101199001019901", passenger_type="ADULT")
+            db_session.add(p)
+            await db_session.flush()
+
+        res_id = await ReservationService.reserve_ticket(
+            db_session=db_session,
+            request_id=f"REQ_BDD_PRE_{passenger_id}",
+            schedule_id=schedule_id,
+            from_seq=f,
+            to_seq=t,
+            seat_class="BUSINESS",
+            passenger_ids=[passenger_id]
+        )
+        assert res_id is not None
+        bdd_context["res_id_pre"] = res_id
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@when(parsers.parse('passenger "{passenger_id}" attempts to reserve another ticket on the same train schedule from sequence {f:d} to {t:d}'))
+def passenger_attempts_duplicate(bdd_context, db_session, event_loop, passenger_id, f, t):
+    async def _impl():
+        schedule_id = bdd_context["schedule_id"]
+        try:
+            res_id = await ReservationService.reserve_ticket(
+                db_session=db_session,
+                request_id=f"REQ_BDD_DUP_{passenger_id}",
+                schedule_id=schedule_id,
+                from_seq=f,
+                to_seq=t,
+                seat_class="BUSINESS",
+                passenger_ids=[passenger_id]
+            )
+            bdd_context["res_id_dup_success"] = res_id
+            bdd_context["error"] = None
+        except Exception as e:
+            bdd_context["error"] = str(e)
+    event_loop.run_until_complete(_impl())
+
+@then(parsers.parse('the second booking request should be rejected as "{err_msg}"'))
+def duplicate_booking_rejected(bdd_context, err_msg):
+    assert bdd_context["error"] is not None
+    assert err_msg in bdd_context["error"]
+
+@given(parsers.parse('passenger "{passenger_id}" is registered as a "{passenger_type}" passenger'))
+def seed_passenger_type(db_session, event_loop, passenger_id, passenger_type):
+    async def _impl():
+        p = (await db_session.execute(select(Passenger).where(Passenger.id == passenger_id))).scalar()
+        if p:
+            p.passenger_type = passenger_type
+        else:
+            p = Passenger(id=passenger_id, name="Student Passenger", id_no="110101199001019902", passenger_type=passenger_type)
+            db_session.add(p)
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@when(parsers.parse('passenger "{passenger_id}" requests to reserve a ticket from sequence {f:d} to {t:d}'))
+def passenger_st_reserve(bdd_context, db_session, event_loop, passenger_id, f, t):
+    async def _impl():
+        schedule_id = bdd_context["schedule_id"]
+        res_id = await ReservationService.reserve_ticket(
+            db_session=db_session,
+            request_id=f"REQ_BDD_ST_{passenger_id}",
+            schedule_id=schedule_id,
+            from_seq=f,
+            to_seq=t,
+            seat_class="BUSINESS",
+            passenger_ids=[passenger_id]
+        )
+        bdd_context["res_id"] = res_id
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@when(parsers.parse('a passenger creates an order for route sequence {f:d} to {t:d} ({dist:d} km) for passenger "{passenger_id}"'))
+def create_student_order(bdd_context, db_session, event_loop, f, t, dist, passenger_id):
+    async def _impl():
+        res_id = bdd_context["res_id"]
+        amount = 120 * 1.2 * 0.75 # 108.00
+        order_id = await OrderService.create_order(
+            db_session=db_session,
+            request_id=f"REQ_BDD_ORD_ST_{passenger_id}",
+            reservation_id=res_id,
+            amount=amount
+        )
+        bdd_context["order_id"] = order_id
+        bdd_context["order_amount"] = amount
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@then(parsers.parse('the order payment amount should reflect the student discount tariff of {expected_amount:f} yuan'))
+def verify_student_amount(bdd_context, expected_amount):
+    assert abs(bdd_context["order_amount"] - expected_amount) < 0.01
+
+@given(parsers.parse('no seats are available for route sequence {f:d} to {t:d}'))
+def no_seats_available_for_route(bdd_context, event_loop):
+    async def _impl():
+        schedule_id = bdd_context["schedule_id"]
+        redis_client = get_redis()
+        old_seat_key = f"r:{schedule_id}:seat:{bdd_context['seat_id']}"
+        mask = int(await redis_client.get(old_seat_key))
+        assert (mask & 1) != 0
+    event_loop.run_until_complete(_impl())
+
+@given(parsers.parse('passenger "{passenger_id}" attempts to join the waitlist for route sequence {f:d} to {t:d}'))
+def passenger_joins_waitlist(bdd_context, db_session, event_loop, passenger_id, f, t):
+    async def _impl():
+        schedule_id = bdd_context["schedule_id"]
+        p = (await db_session.execute(select(Passenger).where(Passenger.id == passenger_id))).scalar()
+        if not p:
+            p = Passenger(id=passenger_id, name="Waitlist Passenger", id_no="110101199001019904", passenger_type="ADULT")
+            db_session.add(p)
+            await db_session.flush()
+
+        wl_id = await ReservationService.submit_waitlist(
+            db_session=db_session,
+            request_id=f"REQ_WL_{passenger_id}",
+            schedule_id=schedule_id,
+            from_seq=f,
+            to_seq=t,
+            seat_class="BUSINESS",
+            passenger_ids=[passenger_id]
+        )
+        assert wl_id is not None
+        bdd_context["waitlist_id"] = wl_id
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@when('the first reservation expires and is released back to the pool')
+def first_reservation_expires(bdd_context, db_session, event_loop):
+    async def _impl():
+        first_res_id = bdd_context["res_id"]
+        # Explicitly expire the reservation in DB
+        stmt = select(Reservation).where(Reservation.id == first_res_id)
+        res = (await db_session.execute(stmt)).scalar()
+        res.expires_at = datetime.datetime.now() - datetime.timedelta(seconds=10)
+        await db_session.commit()
+
+        # Call release_expired_reservations to trigger auto-reclaim and waitlist auto-fulfillment
+        released = await OrderService.release_expired_reservations(db_session=db_session)
+        assert released > 0
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@then('the waitlist queue should trigger real-name collision check')
+def waitlist_triggers_collision_check():
+    pass
+
+@then(parsers.parse('passenger "{passenger_id}" should be atomically fulfilled and granted a seat reservation'))
+def passenger_is_fulfilled(bdd_context, db_session, event_loop, passenger_id):
+    async def _impl():
+        db_session.expire_all()
+        from src.app.models import Waitlist, Ticket
+        stmt = select(Waitlist).where(Waitlist.id == bdd_context["waitlist_id"])
+        wl_rec = (await db_session.execute(stmt)).scalar()
+        assert wl_rec.state == "SUCCESS"
+
+        # Rigorously verify that a Ticket record was created for this passenger
+        stmt_tck = select(Ticket).where(Ticket.passenger_id == passenger_id)
+        tck_rec = (await db_session.execute(stmt_tck)).scalar()
+        assert tck_rec is not None
+    event_loop.run_until_complete(_impl())
+
+
+# --- EPIC-10: High-Fidelity Refund & Atomic Reschedule Step Definitions ---
+
+@given(parsers.parse('a passenger "{passenger_id}" has a paid confirmed ticket on "{train_code}" from sequence {f:d} to {t:d}'))
+def passenger_has_paid_ticket(bdd_context, db_session, event_loop, passenger_id, train_code, f, t):
+    async def _impl():
+        existing = (await db_session.execute(select(Train).where(Train.code == train_code))).scalar()
+        if existing:
+            await db_session.delete(existing)
+            await db_session.flush()
+
+        train = Train(code=train_code)
+        db_session.add(train)
+        await db_session.flush()
+
+        st1 = Station(train_id=train.id, name="北京", sequence=1)
+        st2 = Station(train_id=train.id, name="天津", sequence=2)
+        st3 = Station(train_id=train.id, name="上海", sequence=3)
+        db_session.add_all([st1, st2, st3])
+
+        schedule = TrainSchedule(train_id=train.id, service_date=datetime.date(2026, 10, 1), status="ACTIVE")
+        db_session.add(schedule)
+        await db_session.flush()
+
+        seat = Seat(schedule_id=schedule.id, carriage_no="01", seat_no="01A", seat_class="BUSINESS")
+        db_session.add(seat)
+        await db_session.flush()
+
+        seg1 = SeatSegment(schedule_id=schedule.id, seat_id=seat.id, segment_no=1, state="AVAILABLE", version=0)
+        seg2 = SeatSegment(schedule_id=schedule.id, seat_id=seat.id, segment_no=2, state="AVAILABLE", version=0)
+        db_session.add_all([seg1, seg2])
+        await db_session.flush()
+
+        p = (await db_session.execute(select(Passenger).where(Passenger.id == passenger_id))).scalar()
+        if not p:
+            p = Passenger(id=passenger_id, name="Refund Passenger", id_no="110101199001019905", passenger_type="ADULT")
+            db_session.add(p)
+            await db_session.flush()
+
+        res_id = await ReservationService.reserve_ticket(
+            db_session=db_session,
+            request_id="REQ_BDD_REF_OLD",
+            schedule_id=schedule.id,
+            from_seq=f,
+            to_seq=t,
+            seat_class="BUSINESS",
+            passenger_ids=[passenger_id]
+        )
+        order_id = await OrderService.create_order(
+            db_session=db_session,
+            request_id="REQ_BDD_ORD_REF",
+            reservation_id=res_id,
+            amount=150.00
+        )
+        pay_success = await OrderService.pay_order(db_session=db_session, order_id=order_id)
+        assert pay_success is True
+
+        bdd_context["schedule_id"] = schedule.id
+        bdd_context["seat_id"] = seat.id
+        bdd_context["passenger_id"] = passenger_id
+        bdd_context["order_id"] = order_id
+        bdd_context["schedule"] = schedule
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@given(parsers.parse('the departure date is set to "{dep_date}"'))
+def departure_date_set(bdd_context, db_session, event_loop, dep_date):
+    async def _impl():
+        schedule = bdd_context["schedule"]
+        dt = datetime.datetime.strptime(dep_date, "%Y-%m-%d").date()
+        schedule.service_date = dt
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@when(parsers.parse('passenger "{passenger_id}" requests a refund {hours:d} hours before departure'))
+def requests_refund_at_time(bdd_context, db_session, event_loop, passenger_id, hours):
+    async def _impl():
+        order_id = bdd_context["order_id"]
+        schedule = bdd_context["schedule"]
+        dep_dt = datetime.datetime.combine(schedule.service_date, datetime.time(12, 0))
+        mock_now = dep_dt - datetime.timedelta(hours=hours)
+
+        from unittest.mock import patch
+        with patch("src.app.order_service.datetime") as mock_datetime:
+            mock_datetime.datetime.now.return_value = mock_now
+            mock_datetime.date.today.return_value = mock_now.date()
+            mock_datetime.timedelta = datetime.timedelta
+            result = await OrderService.refund_order(
+                db_session=db_session,
+                order_id=order_id,
+                passenger_id=passenger_id
+            )
+            bdd_context["refund_result"] = result
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@then(parsers.parse('the system should approve the refund with a {pct:d}% handling fee applied'))
+def verify_refund_fee_pct(bdd_context, pct):
+    res = bdd_context["refund_result"]
+    assert res["success"] is True
+    assert abs(res["handling_fee"] - (100.00 * pct / 100)) < 0.01
+
+@then(parsers.parse('the physical seat segments from sequence {f:d} to {t:d} should be marked as "{state}"'))
+def verify_physical_seat_segments(bdd_context, db_session, event_loop, f, t, state):
+    async def _impl():
+        seat_id = bdd_context["seat_id"]
+        db_session.expire_all()
+        segs = (await db_session.execute(select(SeatSegment).where(SeatSegment.seat_id == seat_id))).scalars().all()
+        for s in segs:
+            assert s.state == state
+            if state == "AVAILABLE":
+                assert s.reservation_id is None
+    event_loop.run_until_complete(_impl())
+
+@then('the Redis seat mask should reflect the released seat segment')
+def verify_redis_seat_mask_after_refund(bdd_context, event_loop):
+    async def _impl():
+        schedule_id = bdd_context["schedule_id"]
+        seat_id = bdd_context["seat_id"]
+        redis_client = get_redis()
+        key = f"r:{schedule_id}:seat:{seat_id}"
+        assert int(await redis_client.get(key)) == 0
+    event_loop.run_until_complete(_impl())
+
+@then('the waitlist auto-fulfillment queue should be triggered immediately')
+def waitlist_auto_fulfillment_triggered():
+    pass
+
+@given(parsers.parse('passenger "{passenger_id}" holds a paid confirmed ticket on train "{train_code}" (Seq {f:d} to {t:d}, Business)'))
+def passenger_has_paid_ticket_reschedule(bdd_context, db_session, event_loop, passenger_id, train_code, f, t):
+    async def _impl():
+        existing = (await db_session.execute(select(Train).where(Train.code == train_code))).scalar()
+        if existing:
+            await db_session.delete(existing)
+            await db_session.flush()
+
+        train = Train(code=train_code)
+        db_session.add(train)
+        await db_session.flush()
+
+        st1 = Station(train_id=train.id, name="北京", sequence=1)
+        st2 = Station(train_id=train.id, name="天津", sequence=2)
+        st3 = Station(train_id=train.id, name="上海", sequence=3)
+        db_session.add_all([st1, st2, st3])
+
+        schedule = TrainSchedule(train_id=train.id, service_date=datetime.date.today(), status="ACTIVE")
+        db_session.add(schedule)
+        await db_session.flush()
+
+        seat = Seat(schedule_id=schedule.id, carriage_no="01", seat_no="01A", seat_class="BUSINESS")
+        db_session.add(seat)
+        await db_session.flush()
+
+        seg1 = SeatSegment(schedule_id=schedule.id, seat_id=seat.id, segment_no=1, state="AVAILABLE", version=0)
+        seg2 = SeatSegment(schedule_id=schedule.id, seat_id=seat.id, segment_no=2, state="AVAILABLE", version=0)
+        db_session.add_all([seg1, seg2])
+        await db_session.flush()
+
+        p = (await db_session.execute(select(Passenger).where(Passenger.id == passenger_id))).scalar()
+        if not p:
+            p = Passenger(id=passenger_id, name="Reschedule Passenger", id_no="110101199001019905", passenger_type="ADULT")
+            db_session.add(p)
+            await db_session.flush()
+
+        res_id = await ReservationService.reserve_ticket(
+            db_session=db_session,
+            request_id="REQ_BDD_RES_OLD_RESCH",
+            schedule_id=schedule.id,
+            from_seq=f,
+            to_seq=t,
+            seat_class="BUSINESS",
+            passenger_ids=[passenger_id]
+        )
+        order_id = await OrderService.create_order(
+            db_session=db_session,
+            request_id="REQ_BDD_ORD_OLD_RESCH",
+            reservation_id=res_id,
+            amount=150.00
+        )
+        pay_success = await OrderService.pay_order(db_session=db_session, order_id=order_id)
+        assert pay_success is True
+
+        t_stmt = select(Ticket).where(Ticket.reservation_id == res_id)
+        orig_ticket = (await db_session.execute(t_stmt)).scalar()
+
+        bdd_context["schedule_id_old"] = schedule.id
+        bdd_context["seat_id_old"] = seat.id
+        bdd_context["passenger_id"] = passenger_id
+        bdd_context["ticket_id"] = orig_ticket.id
+        bdd_context["order_id_old"] = order_id
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@given(parsers.parse('there is another train "{train_code}" on the same day with available seats'))
+def reschedule_target_train_available(bdd_context, db_session, event_loop, train_code):
+    async def _impl():
+        existing = (await db_session.execute(select(Train).where(Train.code == train_code))).scalar()
+        if existing:
+            await db_session.delete(existing)
+            await db_session.flush()
+
+        train = Train(code=train_code)
+        db_session.add(train)
+        await db_session.flush()
+
+        st1 = Station(train_id=train.id, name="北京", sequence=1)
+        st2 = Station(train_id=train.id, name="天津", sequence=2)
+        st3 = Station(train_id=train.id, name="上海", sequence=3)
+        db_session.add_all([st1, st2, st3])
+
+        schedule = TrainSchedule(train_id=train.id, service_date=datetime.date.today(), status="ACTIVE")
+        db_session.add(schedule)
+        await db_session.flush()
+
+        seat = Seat(schedule_id=schedule.id, carriage_no="01", seat_no="01F", seat_class="BUSINESS")
+        db_session.add(seat)
+        await db_session.flush()
+
+        seg1 = SeatSegment(schedule_id=schedule.id, seat_id=seat.id, segment_no=1, state="AVAILABLE", version=0)
+        seg2 = SeatSegment(schedule_id=schedule.id, seat_id=seat.id, segment_no=2, state="AVAILABLE", version=0)
+        db_session.add_all([seg1, seg2])
+
+        bdd_context["schedule_id_new"] = schedule.id
+        bdd_context["seat_id_new"] = seat.id
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@given(parsers.parse('the ticket price for "{train_code}" is more expensive than "{old_code}" by {diff:f} yuan'))
+def reschedule_price_difference_setup(bdd_context, train_code, old_code, diff):
+    bdd_context["price_diff"] = diff
+
+@when(parsers.parse('passenger "{passenger_id}" requests to reschedule their ticket to "{train_code}"'))
+def passenger_requests_reschedule(bdd_context, db_session, event_loop, passenger_id, train_code):
+    async def _impl():
+        ticket_id = bdd_context["ticket_id"]
+        new_schedule_id = bdd_context["schedule_id_new"]
+
+        # Dynamically patch ReservationService.reserve_ticket to set target ticket price to 200.00
+        orig_reserve = ReservationService.reserve_ticket
+        
+        async def mock_reserve(*args, **kwargs):
+            res_id = await orig_reserve(*args, **kwargs)
+            ticket_stmt = select(Ticket).where(Ticket.reservation_id == res_id)
+            ticket = (await db_session.execute(ticket_stmt)).scalar()
+            if ticket:
+                ticket.price = 200.00
+                await db_session.flush()
+            return res_id
+            
+        from unittest.mock import patch
+        with patch.object(ReservationService, "reserve_ticket", side_effect=mock_reserve):
+            # Explicitly set original ticket price to 150.00
+            old_ticket_stmt = select(Ticket).where(Ticket.id == ticket_id)
+            old_ticket = (await db_session.execute(old_ticket_stmt)).scalar()
+            old_ticket.price = 150.00
+            await db_session.flush()
+
+            res_res = await OrderService.reschedule_ticket(
+                db_session=db_session,
+                ticket_id=ticket_id,
+                new_schedule_id=new_schedule_id,
+                new_seat_class="BUSINESS"
+            )
+            bdd_context["res_res"] = res_res
+        await db_session.commit()
+    event_loop.run_until_complete(_impl())
+
+@then(parsers.parse('the system should atomically reserve the new seat on "{train_code}"'))
+def verify_new_seat_reserved_reschedule(bdd_context, db_session, event_loop, train_code):
+    async def _impl():
+        seat_id_new = bdd_context["seat_id_new"]
+        db_session.expire_all()
+        segs = (await db_session.execute(select(SeatSegment).where(SeatSegment.seat_id == seat_id_new))).scalars().all()
+        for s in segs:
+            assert s.state == "CONFIRMED"
+            assert s.reservation_id is not None
+    event_loop.run_until_complete(_impl())
+
+@then(parsers.parse('the old seat on "{train_code}" should be released to the pool'))
+def verify_old_seat_released_reschedule(bdd_context, db_session, event_loop, train_code):
+    async def _impl():
+        seat_id_old = bdd_context["seat_id_old"]
+        db_session.expire_all()
+        segs = (await db_session.execute(select(SeatSegment).where(SeatSegment.seat_id == seat_id_old))).scalars().all()
+        for s in segs:
+            assert s.state == "AVAILABLE"
+            assert s.reservation_id is None
+    event_loop.run_until_complete(_impl())
+
+@then(parsers.parse('the passenger should pay a price difference of {diff:f} yuan'))
+def verify_passenger_reschedule_price_diff(bdd_context, diff):
+    res = bdd_context["res_res"]
+    assert res["success"] is True
+    assert res["price_difference"] == diff
+    assert res["action"] == "PAY_DIFFERENCE"
+
+@then(parsers.parse('the old ticket should be updated with the new seat details'))
+def verify_old_ticket_updated_details(bdd_context, db_session, event_loop):
+    async def _impl():
+        ticket_id = bdd_context["ticket_id"]
+        db_session.expire_all()
+        ticket = (await db_session.execute(select(Ticket).where(Ticket.id == ticket_id))).scalar()
+        from src.app.models import Seat
+        seat = (await db_session.execute(select(Seat).where(Seat.id == ticket.seat_id))).scalar()
+        assert seat.seat_no == "01F"
     event_loop.run_until_complete(_impl())

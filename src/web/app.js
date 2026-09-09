@@ -41,7 +41,7 @@ const OrderPayment = {
     fromStation: { type: Number, required: true },
     toStation: { type: Number, required: true }
   },
-  emits: ["pay-order", "reset"]
+  emits: ["pay-order", "reset", "refund-ticket"]
 };
 
 // 4. Component: SystemLogs
@@ -554,6 +554,63 @@ const app = createApp({
       }
     };
 
+    // ACTIVE REFUND TICKET (POST /api/v1/refund)
+    const refundTicket = async () => {
+      try {
+        if (!orderId.value) return;
+        pushLog(`[Refund] 正在向微服务退票网关发起退款申请，订单号: ${orderId.value}...`);
+        
+        const refundUrl = `${backendUrl.value}/api/v1/refund`;
+        const response = await fetch(refundUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order_id: orderId.value }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(`退票失败: ${errorData.detail || errorData.error}`);
+        }
+
+        const data = await response.json();
+        if (data.success) {
+          pushLog(
+            `[Success] 退票成功！订单状态已扭转为: REFUNDED。退款资金原路退回！`,
+            "var(--color-rose)",
+          );
+          pushLog(
+            `[Outbox] 事务性发件箱已写入 "ORDER_REFUNDED" 物理事件。`,
+            "var(--color-rail-blue)",
+          );
+          pushLog(
+            `[Redis/DB] 物理席位、Redis 区间段位图已原子释放，12306 全局票池已完全恢复！`,
+            "var(--color-emerald)",
+          );
+          pushLog(
+            `[SRE/Waitlist] 席位释放触发自动候补队列，开始为排队乘客进行毫秒级自动购票撮合...`,
+            "var(--color-amber)",
+          );
+          
+          // Clear reservation and payment states
+          isPaid.value = false;
+          reservationId.value = null;
+          orderId.value = null;
+          
+          // Trigger automatic background data refresh to let user see recovered seat counts!
+          setTimeout(async () => {
+            await queryAvailability();
+          }, 300);
+        } else {
+          throw new Error("退款网关返回核销失败");
+        }
+      } catch (error) {
+        pushLog(
+          `[Error] 退票执行异常: ${error.message}`,
+          "var(--color-rose)",
+        );
+      }
+    };
+
     // Reset workflows for next ticket purchase
     const resetWorkflow = () => {
       reservationId.value = null;
@@ -597,6 +654,7 @@ const app = createApp({
       reserveTicket,
       reserveSplitTicket,
       payOrder,
+      refundTicket,
       triggerCronRelease,
       releaseLongDistanceQuota,
       resetWorkflow,

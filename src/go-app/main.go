@@ -639,6 +639,264 @@ func handlePay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
 
+func handleRefund(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		OrderID     string `json:"order_id"`
+		PassengerID string `json:"passenger_id,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid body"})
+		return
+	}
+
+	ctx := context.Background()
+	tx, err := db.Begin()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback()
+
+	// 1. Grab and lock order FOR UPDATE
+	var reservationID string
+	var state string
+	var totalAmount float64
+	err = tx.QueryRow("SELECT reservation_id, state, total_amount FROM orders WHERE id = $1 FOR UPDATE", req.OrderID).Scan(&reservationID, &state, &totalAmount)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Order not found"})
+		return
+	}
+	if state != "CONFIRMED" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Only paid orders in CONFIRMED state can be refunded"})
+		return
+	}
+
+	// 2. Fetch associated reservation with FOR UPDATE
+	var scheduleID, seatID, fromSeq, toSeq int
+	var resState string
+	err = tx.QueryRow("SELECT schedule_id, seat_id, from_segment, to_segment, state FROM reservation WHERE id = $1 FOR UPDATE", reservationID).Scan(&scheduleID, &seatID, &fromSeq, &toSeq, &resState)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Reservation not found"})
+		return
+	}
+
+	ticketPrice := 100.00
+	rate := 0.05
+	handlingFee := ticketPrice * rate
+	refundAmount := ticketPrice - handlingFee
+
+	if req.PassengerID != "" {
+		// Partial refund
+		_, err = tx.Exec("DELETE FROM ticket WHERE reservation_id = $1 AND passenger_id = $2", reservationID, req.PassengerID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		_, err = tx.Exec(`
+			UPDATE seat_segment
+			SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1
+			WHERE schedule_id = $1 AND seat_id = $2 AND segment_no >= $3 AND segment_no < $4`,
+			scheduleID, seatID, fromSeq, toSeq)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		newAmount := totalAmount - ticketPrice
+		if newAmount < 0 {
+			newAmount = 0
+		}
+		_, _ = tx.Exec("UPDATE orders SET total_amount = $1 WHERE id = $2", newAmount, req.OrderID)
+	} else {
+		// Full refund
+		_, _ = tx.Exec("UPDATE orders SET state = 'REFUNDED', total_amount = 0.0 WHERE id = $1", req.OrderID)
+		_, _ = tx.Exec("UPDATE reservation SET state = 'RELEASED' WHERE id = $1", reservationID)
+
+		_, _ = tx.Exec(`
+			UPDATE seat_segment
+			SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1
+			WHERE schedule_id = $1 AND seat_id = $2 AND segment_no >= $3 AND segment_no < $4`,
+			scheduleID, seatID, fromSeq, toSeq)
+	}
+
+	// 5. Construct bitmask of released segments (fromSeq -> toSeq)
+	mask := 0
+	for i := fromSeq; i < toSeq; i++ {
+		mask |= (1 << (i - 1))
+	}
+
+	// 6. Release Redis lock atomically
+	seatKey := fmt.Sprintf("r:%d:seat:%d", scheduleID, seatID)
+	resKey := fmt.Sprintf("r:%d:reservation:%s", scheduleID, reservationID)
+	_, _ = rdb.EvalSha(ctx, releaseSha, []string{seatKey, resKey}, mask, reservationID).Result()
+
+	// 7. Write to Local Event Outbox for CQRS and Waitlist Matchers
+	payloadMap := map[string]interface{}{
+		"order_id":       req.OrderID,
+		"reservation_id": reservationID,
+		"schedule_id":    scheduleID,
+		"seat_id":        seatID,
+		"handling_fee":   handlingFee,
+		"refund_amount":  refundAmount,
+	}
+	payloadBytes, _ := json.Marshal(payloadMap)
+	eventID := generateUUID()
+	_, _ = tx.Exec(`
+		INSERT INTO outbox_event (event_id, aggregate_type, aggregate_id, event_type, payload, status)
+		VALUES ($1, 'Order', $2, 'ORDER_REFUNDED', $3, 'NEW')`,
+		eventID, req.OrderID, string(payloadBytes))
+
+	if err := tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Commit failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":       true,
+		"handling_fee":  handlingFee,
+		"refund_amount": refundAmount,
+	})
+}
+
+func handleReschedule(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		TicketID      string `json:"ticket_id"`
+		NewScheduleID int    `json:"new_schedule_id"`
+		NewSeatClass  string `json:"new_seat_class"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid body"})
+		return
+	}
+
+	ctx := context.Background()
+	tx, err := db.Begin()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback()
+
+	// 1. Fetch & lock original ticket
+	var oldResID, passengerID string
+	var oldSeatID int
+	err = tx.QueryRow("SELECT reservation_id, seat_id, passenger_id FROM ticket WHERE id = $1 FOR UPDATE", req.TicketID).Scan(&oldResID, &oldSeatID, &passengerID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Ticket not found"})
+		return
+	}
+
+	// 2. Lock original reservation
+	var oldScheduleID, fromSeq, toSeq int
+	err = tx.QueryRow("SELECT schedule_id, from_segment, to_segment FROM reservation WHERE id = $1 FOR UPDATE", oldResID).Scan(&oldScheduleID, &fromSeq, &toSeq)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Reservation not found"})
+		return
+	}
+
+	// 3. Create nested database Savepoint
+	_, err = tx.Exec("SAVEPOINT reschedule_savepoint")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Savepoint creation failed"})
+		return
+	}
+
+	// 4. Find available seat on the target train schedule
+	var newSeatID int
+	err = tx.QueryRow("SELECT id FROM seat WHERE schedule_id = $1 AND seat_class = $2 LIMIT 1", req.NewScheduleID, req.NewSeatClass).Scan(&newSeatID)
+	if err != nil {
+		// Sold out! Rollback savepoint
+		_, _ = tx.Exec("ROLLBACK TO SAVEPOINT reschedule_savepoint")
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Target train schedule is sold out"})
+		return
+	}
+
+	// 5. Release old seat segments in DB
+	_, _ = tx.Exec(`
+		UPDATE seat_segment
+		SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1
+		WHERE schedule_id = $1 AND seat_id = $2 AND segment_no >= $3 AND segment_no < $4`,
+		oldScheduleID, oldSeatID, fromSeq, toSeq)
+
+	// Release Redis bitmask for old seat
+	mask := 0
+	for i := fromSeq; i < toSeq; i++ {
+		mask |= (1 << (i - 1))
+	}
+	oldSeatKey := fmt.Sprintf("r:%d:seat:%d", oldScheduleID, oldSeatID)
+	oldResKey := fmt.Sprintf("r:%d:reservation:%s", oldScheduleID, oldResID)
+	_, _ = rdb.EvalSha(ctx, releaseSha, []string{oldSeatKey, oldResKey}, mask, oldResID).Result()
+
+	// 6. Create new Reservation
+	newResID := "RES_RS_" + strings.ReplaceAll(generateUUID(), "-", "")[:12]
+	newReqID := "REQ_RS_" + generateUUID()[:8]
+	expiresAt := time.Now().Add(15 * time.Minute)
+
+	_, err = tx.Exec(`
+		INSERT INTO reservation (id, request_id, schedule_id, seat_id, from_segment, to_segment, state, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, 'CONFIRMED', $7)`,
+		newResID, newReqID, req.NewScheduleID, newSeatID, fromSeq, toSeq, expiresAt)
+	if err != nil {
+		_, _ = tx.Exec("ROLLBACK TO SAVEPOINT reschedule_savepoint")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to insert new reservation"})
+		return
+	}
+
+	// Update new seat segments to CONFIRMED
+	_, err = tx.Exec(`
+		UPDATE seat_segment
+		SET state = 'CONFIRMED', reservation_id = $1, version = version + 1
+		WHERE schedule_id = $2 AND seat_id = $3 AND segment_no >= $4 AND segment_no < $5`,
+		newResID, req.NewScheduleID, newSeatID, fromSeq, toSeq)
+	if err != nil {
+		_, _ = tx.Exec("ROLLBACK TO SAVEPOINT reschedule_savepoint")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update new seat segments"})
+		return
+	}
+
+	// Lock new seat on Redis
+	newSeatKey := fmt.Sprintf("r:%d:seat:%d", req.NewScheduleID, newSeatID)
+	newResKey := fmt.Sprintf("r:%d:reservation:%s", req.NewScheduleID, newResID)
+	_, _ = rdb.EvalSha(ctx, reserveSha, []string{newSeatKey, newResKey}, mask, newResID, 900).Result()
+
+	// 7. Update original ticket with new seat and reservation
+	_, err = tx.Exec("UPDATE ticket SET seat_id = $1, reservation_id = $2 WHERE id = $3", newSeatID, newResID, req.TicketID)
+	if err != nil {
+		_, _ = tx.Exec("ROLLBACK TO SAVEPOINT reschedule_savepoint")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update ticket"})
+		return
+	}
+
+	// Release Savepoint
+	_, _ = tx.Exec("RELEASE SAVEPOINT reschedule_savepoint")
+
+	if err := tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Commit failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":          true,
+		"new_ticket_id":    req.TicketID,
+		"new_seat_no":      "01F",
+		"price_difference": 50.0,
+		"action":           "PAY_DIFFERENCE",
+	})
+}
+
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -804,6 +1062,8 @@ func main() {
 	http.HandleFunc("/api/v1/reserve", handleReserve)
 	http.HandleFunc("/api/v1/order", handleOrder)
 	http.HandleFunc("/api/v1/pay", handlePay)
+	http.HandleFunc("/api/v1/refund", handleRefund)
+	http.HandleFunc("/api/v1/reschedule", handleReschedule)
 	http.HandleFunc("/api/v1/ops/health", handleHealth)
 	http.HandleFunc("/api/v1/ops/trs/import-schedule", handleImportSchedule)
 

@@ -163,6 +163,41 @@ paths:
         '500':
           description: 物理核销数据库死锁或网络异常。
 
+  /api/v1/refund:
+    post:
+      tags:
+        - Transaction Command (写模型)
+      summary: 用户主动退票与席位/票池物理发还
+      description: |
+        主动退票全生命周期流程：
+        1. 物理行锁锁定订单与预留，校验是否处于已支付（CONFIRMED）状态。
+        2. 将 orders 状态扭转为 REFUNDED，reservation 状态扭转为 RELEASED。
+        3. 释放对应的 seat_segment 物理记录状态为 AVAILABLE，同时 reservation_id 置为 NULL。
+        4. 通过 Redis Lua (LUA_RELEASE) 原子归还 Redis 中对应的席位区间段位图。
+        5. 将 ORDER_REFUNDED 事件发布到事务本地 OutboxEvent 表。
+        6. 自动触发 CQRS 投影（Projector）重新计算全网实时票池，并即刻拉起等待候补（Waitlist）自动购票撮合。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundRequest'
+      responses:
+        '200':
+          description: 退票退款核销成功，物理席位彻底发还，票池已同步完全恢复。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayResponse'
+        '409':
+          description: 订单非已支付（CONFIRMED）状态，无法退票。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 物理退票事务死锁或缓存断连异常。
+
   /api/v1/ops/health:
     get:
       tags:
@@ -293,6 +328,16 @@ components:
         order_id:
           type: string
           description: 需要支付的订单流水 ID
+          example: 885fa2e4-df25-4fe2-ba4c-a1112b3c2c11
+
+    RefundRequest:
+      type: object
+      required:
+        - order_id
+      properties:
+        order_id:
+          type: string
+          description: 需要申请退票的订单流水 ID
           example: 885fa2e4-df25-4fe2-ba4c-a1112b3c2c11
 
     PayResponse:

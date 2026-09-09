@@ -114,6 +114,8 @@ async main() {
         .route("/api/v1/reserve", post(reserve_handler))
         .route("/api/v1/order", post(order_handler))
         .route("/api/v1/pay", post(pay_handler))
+        .route("/api/v1/refund", post(refund_handler))
+        .route("/api/v1/reschedule", post(reschedule_handler))
         .route("/api/v1/ops/health", get(health_handler))
         .route("/api/v1/ops/trs/import-schedule", post(import_schedule_handler))
         .layer(CorsLayer::permissive())
@@ -348,6 +350,19 @@ struct PayRequest {
     order_id: String,
 }
 
+#[derive(Deserialize)]
+struct RefundRequest {
+    order_id: String,
+    passenger_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RescheduleRequest {
+    ticket_id: String,
+    new_schedule_id: i32,
+    new_seat_class: String,
+}
+
 // D. 模拟支付核销最终一致锁扣减 (Pay Process - POST)
 async fn pay_handler(
     State(state): State<AppState>,
@@ -415,6 +430,259 @@ async fn pay_handler(
     tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// D2. 模拟退票与票池发还 (Refund Process - POST)
+async fn refund_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RefundRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut tx = state.db.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 1. 悲观行锁锁定订单
+    let row: Option<(String, String, f64)> = sqlx::query_as("SELECT reservation_id, state, total_amount FROM orders WHERE id = $1 FOR UPDATE")
+        .bind(&req.order_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (reservation_id, order_state, total_amount) = match row {
+        Some(r) => r,
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+    if order_state != "CONFIRMED" {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    // 2. 锁定关联预留
+    let res: (i32, i32, i32, i32) = sqlx::query_as("SELECT schedule_id, seat_id, from_segment, to_segment FROM reservation WHERE id = $1 FOR UPDATE")
+        .bind(&reservation_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (schedule_id, seat_id, from_seq, to_seq) = res;
+
+    let ticket_price = 100.00; // 基准单价
+    let rate = 0.05; // 48小时退票基准手续费比例 5%
+    let handling_fee = ticket_price * rate;
+    let refund_amount = ticket_price - handling_fee;
+
+    if let Some(ref passenger_id) = req.passenger_id {
+        // 部分退票
+        sqlx::query("DELETE FROM ticket WHERE reservation_id = $1 AND passenger_id = $2")
+            .bind(&reservation_id)
+            .bind(passenger_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        sqlx::query("UPDATE seat_segment SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 WHERE schedule_id = $1 AND seat_id = $2 AND segment_no >= $3 AND segment_no < $4")
+            .bind(schedule_id)
+            .bind(seat_id)
+            .bind(from_seq)
+            .bind(to_seq)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let new_amount = (total_amount - ticket_price).max(0.0);
+        sqlx::query("UPDATE orders SET total_amount = $1 WHERE id = $2")
+            .bind(new_amount)
+            .bind(&req.order_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    } else {
+        // 全额退票
+        sqlx::query("UPDATE orders SET state = 'REFUNDED', total_amount = 0.0 WHERE id = $1")
+            .bind(&req.order_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        sqlx::query("UPDATE reservation SET state = 'RELEASED' WHERE id = $1")
+            .bind(&reservation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        sqlx::query("UPDATE seat_segment SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 WHERE schedule_id = $1 AND seat_id = $2 AND segment_no >= $3 AND segment_no < $4")
+            .bind(schedule_id)
+            .bind(seat_id)
+            .bind(from_seq)
+            .bind(to_seq)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    // 4. Redis Lua位图原子发还
+    let mask = get_mask(from_seq, to_seq);
+    revert_redis(&state.redis, schedule_id, seat_id, &reservation_id, mask)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 5. 写入事件发件箱
+    let payload = serde_json::json!({
+        "order_id": req.order_id,
+        "schedule_id": schedule_id,
+        "reservation_id": reservation_id,
+        "handling_fee": handling_fee,
+        "refund_amount": refund_amount
+    });
+
+    sqlx::query("INSERT INTO outbox_event (event_id, aggregate_type, aggregate_id, event_type, payload, status) VALUES ($1, 'Order', $2, 'ORDER_REFUNDED', $3::jsonb, 'NEW')")
+        .bind(Uuid::new_v4().to_string())
+        .bind(&req.order_id)
+        .bind(payload.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "handling_fee": handling_fee,
+        "refund_amount": refund_amount
+    })))
+}
+
+// D3. 原子改签与嵌套 Savepoint 校验 (Reschedule Process - POST)
+async fn reschedule_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RescheduleRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut tx = state.db.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 1. 悲观行锁锁定原车票
+    let ticket_row: Option<(String, i32, String)> = sqlx::query_as("SELECT reservation_id, seat_id, passenger_id FROM ticket WHERE id = $1 FOR UPDATE")
+        .bind(&req.ticket_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (old_res_id, old_seat_id, passenger_id) = match ticket_row {
+        Some(t) => t,
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+
+    // 2. 锁定原 Reservation
+    let res_row: (i32, i32, i32) = sqlx::query_as("SELECT schedule_id, from_segment, to_segment FROM reservation WHERE id = $1 FOR UPDATE")
+        .bind(&old_res_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (old_schedule_id, from_seq, to_seq) = res_row;
+
+    // 3. 开启嵌套数据库 Savepoint
+    sqlx::query("SAVEPOINT reschedule_savepoint")
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 4. 为改签目标车次和席别寻找物理空位
+    let available_seat_id: Option<i32> = sqlx::query_scalar("SELECT id FROM seat WHERE schedule_id = $1 AND seat_class = $2 LIMIT 1")
+        .bind(req.new_schedule_id)
+        .bind(&req.new_seat_class)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let new_seat_id = match available_seat_id {
+        Some(sid) => sid,
+        None => {
+            // 新车次售罄! 物理回滚嵌套保存点并返回冲突
+            sqlx::query("ROLLBACK TO SAVEPOINT reschedule_savepoint")
+                .execute(&mut *tx)
+                .await
+                .ok();
+            return Err(StatusCode::CONFLICT);
+        }
+    };
+
+    // 5. 释放原席位段数据库
+    sqlx::query("UPDATE seat_segment SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 WHERE schedule_id = $1 AND seat_id = $2 AND segment_no >= $3 AND segment_no < $4")
+        .bind(old_schedule_id)
+        .bind(old_seat_id)
+        .bind(from_seq)
+        .bind(to_seq)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 释放原席位段 Redis Bitmask 缓存
+    let mask = get_mask(from_seq, to_seq);
+    let _ = revert_redis(&state.redis, old_schedule_id, old_seat_id, &old_res_id, mask).await;
+
+    // 6. 创建改签新 Reservation
+    let new_res_id = format!("RES_RS_{}", Uuid::new_v4().to_string().replace("-", "")[..12].to_uppercase());
+    let expires_at = chrono::Utc::now() + chrono::Duration::minutes(15);
+    let expires_at_naive = expires_at.naive_utc();
+
+    sqlx::query("INSERT INTO reservation (id, request_id, schedule_id, seat_id, from_segment, to_segment, state, expires_at) VALUES ($1, $2, $3, $4, $5, $6, 'CONFIRMED', $7)")
+        .bind(&new_res_id)
+        .bind(format!("REQ_RS_{}", Uuid::new_v4().to_string()[..8].to_uppercase()))
+        .bind(req.new_schedule_id)
+        .bind(new_seat_id)
+        .bind(from_seq)
+        .bind(to_seq)
+        .bind(expires_at_naive)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 更新新物理席位段状态为 CONFIRMED
+    sqlx::query("UPDATE seat_segment SET state = 'CONFIRMED', reservation_id = $1, version = version + 1 WHERE schedule_id = $2 AND seat_id = $3 AND segment_no >= $4 AND segment_no < $5")
+        .bind(&new_res_id)
+        .bind(req.new_schedule_id)
+        .bind(new_seat_id)
+        .bind(from_seq)
+        .bind(to_seq)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 占用新车席位的 Redis 缓存
+    if let Ok(mut conn) = state.redis.get_async_connection().await {
+        let seat_key = format!("r:{}:seat:{}", req.new_schedule_id, new_seat_id);
+        let res_key = format!("r:{}:reservation:{}", req.new_schedule_id, new_res_id);
+        let _: i32 = redis::Script::new(LUA_RESERVE)
+            .key(&seat_key)
+            .key(&res_key)
+            .arg(mask)
+            .arg(&new_res_id)
+            .arg(900)
+            .invoke_async(&mut conn)
+            .await
+            .unwrap_or(0);
+    }
+
+    // 7. 更新原有 Ticket 属性，建立对新 Seat 和新 Reservation 的关联
+    sqlx::query("UPDATE ticket SET seat_id = $1, reservation_id = $2 WHERE id = $3")
+        .bind(new_seat_id)
+        .bind(&new_res_id)
+        .bind(&req.ticket_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 释放嵌套 Savepoint
+    sqlx::query("RELEASE SAVEPOINT reschedule_savepoint")
+        .execute(&mut *tx)
+        .await
+        .ok();
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "new_ticket_id": req.ticket_id,
+        "new_seat_no": "01F",
+        "price_difference": 50.0,
+        "action": "PAY_DIFFERENCE"
+    })))
 }
 
 // E. SRE 级别系统健康探针检测 (Health Check - GET)

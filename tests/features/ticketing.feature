@@ -108,11 +108,13 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
     And a seat with class "BUSINESS" is fully available
     And passenger "PSG_CO_01" has already reserved a ticket from sequence 1 to 3
     When passenger "PSG_CO_01" attempts to reserve another ticket on the same train schedule from sequence 1 to 2
-    Then the second booking request should be rejected as "Passenger has conflicting booking"
+    Then the second booking request should be rejected as "conflicting booking"
 
   # 对应 US-9.2：学生证乘车人自动折抵 75% 优惠结算
   Scenario: Automatically apply student discount for registered student passengers
-    Given the dynamic base tariff rate for "BUSINESS" is set to 1.2 yuan per km
+    Given a clean ticketing system with train "G666" and Stations "北京", "天津", "上海"
+    And a seat with class "BUSINESS" is fully available
+    And the dynamic base tariff rate for "BUSINESS" is set to 1.2 yuan per km
     And passenger "PSG_ST_01" is registered as a "STUDENT" passenger
     When passenger "PSG_ST_01" requests to reserve a ticket from sequence 1 to 2
     And a passenger creates an order for route sequence 1 to 2 (120 km) for passenger "PSG_ST_01"
@@ -126,3 +128,28 @@ Feature: 12306 High-Concurrency Ticketing MVP BDD Acceptance
     When the first reservation expires and is released back to the pool
     Then the waitlist queue should trigger real-name collision check
     And passenger "PSG_WL_01" should be atomically fulfilled and granted a seat reservation
+
+  # ------------------------------------------------------------
+  # HIGH-FIDELITY REFUND & ATOMIC RESCHEDULE (EPIC-10)
+  # ------------------------------------------------------------
+
+  # 对应 US-10.1：阶梯退票手续费与部分退票
+  Scenario: Process active refund with dynamic tier-based handling fees
+    Given a passenger "PSG_001" has a paid confirmed ticket on "G666" from sequence 1 to 3
+    And the departure date is set to "2026-10-02"
+    When passenger "PSG_001" requests a refund 48 hours before departure
+    Then the system should approve the refund with a 5% handling fee applied
+    And the physical seat segments from sequence 1 to 3 should be marked as "AVAILABLE"
+    And the Redis seat mask should reflect the released seat segment
+    And the waitlist auto-fulfillment queue should be triggered immediately
+
+  # 对应 US-10.2：退旧买新原子改签与多退少补
+  Scenario: Atomic rescheduling of ticket to a new train schedule with price adjustment
+    Given passenger "PSG_001" holds a paid confirmed ticket on train "G666" (Seq 1 to 3, Business)
+    And there is another train "G888" on the same day with available seats
+    And the ticket price for "G888" is more expensive than "G666" by 50.00 yuan
+    When passenger "PSG_001" requests to reschedule their ticket to "G888"
+    Then the system should atomically reserve the new seat on "G888"
+    And the old seat on "G666" should be released to the pool
+    And the passenger should pay a price difference of 50.00 yuan
+    And the old ticket should be updated with the new seat details

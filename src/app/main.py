@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from src.app.database import async_session
 from src.app.redis_client import get_redis
 from src.app.reservation_service import ReservationService
@@ -69,6 +69,15 @@ class OrderRequest(BaseModel):
 
 class PayRequest(BaseModel):
     order_id: str
+
+class RefundRequest(BaseModel):
+    order_id: str
+    passenger_id: Optional[str] = None
+
+class RescheduleRequest(BaseModel):
+    ticket_id: str
+    new_schedule_id: int
+    new_seat_class: str
 
 class WaitlistRequest(BaseModel):
     request_id: str
@@ -229,6 +238,35 @@ async def pay_order(req: PayRequest, db=Depends(get_db)):
         )
         await db.commit()
         return {"success": success}
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/v1/refund")
+async def refund_order(req: RefundRequest, db=Depends(get_db)):
+    try:
+        result = await OrderService.refund_order(
+            db_session=db,
+            order_id=req.order_id,
+            passenger_id=req.passenger_id
+        )
+        await db.commit()
+        return result
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/v1/reschedule")
+async def reschedule_ticket(req: RescheduleRequest, db=Depends(get_db)):
+    try:
+        result = await OrderService.reschedule_ticket(
+            db_session=db,
+            ticket_id=req.ticket_id,
+            new_schedule_id=req.new_schedule_id,
+            new_seat_class=req.new_seat_class
+        )
+        await db.commit()
+        return result
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
