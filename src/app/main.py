@@ -1,11 +1,15 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+import uuid
+import logging
 from src.app.database import async_session
 from src.app.redis_client import get_redis
 from src.app.reservation_service import ReservationService
 from src.app.order_service import OrderService
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="12306 High-Concurrency Ticketing MVP", version="1.0.0")
 
@@ -17,6 +21,37 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# W3C traceparent context propagation middleware for distributed tracing compliance
+@app.middleware("http")
+async def trace_context_propagation_middleware(request: Request, call_next):
+    traceparent = request.headers.get("traceparent")
+    
+    if traceparent:
+        parts = traceparent.split("-")
+        if len(parts) == 4:
+            trace_id = parts[1]
+            span_id = parts[2]
+        else:
+            trace_id = uuid.uuid4().hex
+            span_id = uuid.uuid4().hex[16:]
+    else:
+        trace_id = uuid.uuid4().hex
+        span_id = uuid.uuid4().hex[16:]
+        
+    # Standard W3C Traceparent: 00-trace_id-span_id-trace_flags
+    new_traceparent = f"00-{trace_id}-{span_id}-01"
+    
+    # Store trace_id in request state for debugging or logs
+    request.state.trace_id = trace_id
+    
+    response = await call_next(request)
+    
+    # Propagate trace context to response headers and inject multi-language identifier
+    response.headers["traceparent"] = new_traceparent
+    response.headers["X-12306-Engine"] = "python-fastapi"
+    response.headers["X-Trace-ID"] = trace_id
+    return response
 
 # 1. Database Dependency Generator
 async def get_db():
@@ -97,17 +132,84 @@ async def query_availability(
     seat_class: str,
     db=Depends(get_db)
 ):
-    redis_client = get_redis()
     cache_key = f"q:availability:{schedule_id}:{seat_class}"
     field = f"{from_station_seq}-{to_station_seq}"
     
-    # Check memory read model first
-    val = await redis_client.hget(cache_key, field)
-    if val is None:
-        # Cache Miss: trigger localized projection recalculation to heal the read model
-        from src.app.projector import Projector
-        await Projector.recalculate_and_project(db_session=db, schedule_id=schedule_id)
+    redis_available = True
+    try:
+        redis_client = get_redis()
         val = await redis_client.hget(cache_key, field)
+    except Exception as redis_err:
+        logger.warning(f"SRE: Redis cache unavailable ({str(redis_err)}). Gracefully degrading to database on-the-fly calculation.")
+        redis_available = False
+        val = None
+
+    if val is None:
+        if not redis_available:
+            # Redis SPOF Fallback: perform pure database-driven bitmask calculation on-the-fly!
+            from src.app.models import Seat, SeatSegment
+            from sqlalchemy import select
+            
+            # Fetch all seats of this class and schedule
+            seat_stmt = select(Seat).where(Seat.schedule_id == schedule_id, Seat.seat_class == seat_class)
+            seats = (await db.execute(seat_stmt)).scalars().all()
+            seat_ids = [seat.id for seat in seats]
+            
+            if not seat_ids:
+                return {"available_seats": 0}
+                
+            # Fetch all seat segments for these seats
+            segment_stmt = select(SeatSegment).where(SeatSegment.schedule_id == schedule_id, SeatSegment.seat_id.in_(seat_ids))
+            segments = (await db.execute(segment_stmt)).scalars().all()
+            
+            # Build occupied bitmaps
+            seat_bitmaps = {sid: 0 for sid in seat_ids}
+            for seg in segments:
+                if seg.state != "AVAILABLE":
+                    seat_bitmaps[seg.seat_id] |= (1 << (seg.segment_no - 1))
+                    
+            # Compute route interval bitmask
+            route_mask = 0
+            for seg_idx in range(from_station_seq, to_station_seq):
+                route_mask |= (1 << (seg_idx - 1))
+                
+            available_count = 0
+            for seat_id in seat_ids:
+                occupied_mask = seat_bitmaps.get(seat_id, 0)
+                if (occupied_mask & route_mask) == 0:
+                    available_count += 1
+            return {"available_seats": available_count}
+            
+        # Standard Cache Miss path: trigger localized projection recalculation to heal the read model
+        from src.app.projector import Projector
+        try:
+            await Projector.recalculate_and_project(db_session=db, schedule_id=schedule_id)
+            val = await redis_client.hget(cache_key, field)
+        except Exception as proj_err:
+            logger.error(f"SRE: Recalculate projection failed ({str(proj_err)}). Falling back to direct database query.")
+            # Fallback path if projector save fails due to Redis timeout/issues
+            from src.app.models import Seat, SeatSegment
+            from sqlalchemy import select
+            seat_stmt = select(Seat).where(Seat.schedule_id == schedule_id, Seat.seat_class == seat_class)
+            seats = (await db.execute(seat_stmt)).scalars().all()
+            seat_ids = [seat.id for seat in seats]
+            if not seat_ids:
+                return {"available_seats": 0}
+            segment_stmt = select(SeatSegment).where(SeatSegment.schedule_id == schedule_id, SeatSegment.seat_id.in_(seat_ids))
+            segments = (await db.execute(segment_stmt)).scalars().all()
+            seat_bitmaps = {sid: 0 for sid in seat_ids}
+            for seg in segments:
+                if seg.state != "AVAILABLE":
+                    seat_bitmaps[seg.seat_id] |= (1 << (seg.segment_no - 1))
+            route_mask = 0
+            for seg_idx in range(from_station_seq, to_station_seq):
+                route_mask |= (1 << (seg_idx - 1))
+            available_count = 0
+            for seat_id in seat_ids:
+                occupied_mask = seat_bitmaps.get(seat_id, 0)
+                if (occupied_mask & route_mask) == 0:
+                    available_count += 1
+            return {"available_seats": available_count}
         
     count = int(val) if val is not None else 0
     return {"available_seats": count}
