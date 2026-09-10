@@ -110,6 +110,10 @@ class SplitReserveRequest(BaseModel):
 class QuotaReleaseRequest(BaseModel):
     schedule_id: int
 
+class GraphQLRequest(BaseModel):
+    query: str
+    variables: Optional[dict] = None
+
 class OrderRequest(BaseModel):
     request_id: str
     reservation_id: str
@@ -451,3 +455,15 @@ async def trs_quota_release(req: QuotaReleaseRequest, db=Depends(get_db)):
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/graphql")
+async def graphql_endpoint(req: GraphQLRequest, db=Depends(get_db)):
+    """Unified POST endpoint executing custom high-concurrency GraphQL queries and mutations."""
+    from src.app.graphql_engine import resolve_graphql_query
+    return await resolve_graphql_query(db_session=db, query_str=req.query)
+
+@app.get("/graphql")
+async def graphql_schema():
+    """Unified GET endpoint rendering the authoritative GraphQL SDL Schema."""
+    from src.app.graphql_engine import GRAPHQL_SCHEMA_SDL
+    return {"schema": GRAPHQL_SCHEMA_SDL}

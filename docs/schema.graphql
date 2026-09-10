@@ -1,0 +1,176 @@
+# ============================================================================
+# 🌌 12306 Next-Generation Ticketing System - GraphQL SDL Specification
+# Version: V1.0.0
+# Reference: CQRS Query Model Symmetrical API Protocol
+# ============================================================================
+
+"""
+代表中途站点信息，包含沿途各站的中文名称与进站次序
+"""
+type Station {
+  """
+  站点名称 (例如: "北京西", "武汉", "上海虹桥")
+  """
+  name: String!
+
+  """
+  列车停靠和通过的绝对进站次序 (自 1 开始单调递增)
+  """
+  sequence: Int!
+}
+
+"""
+实时区间余票，结合了 Redis Bitmask 运算与 Caffeine 本地内存高速缓存
+"""
+type TrainAvailability {
+  """
+  目标列车物理排班 ID
+  """
+  scheduleId: Int!
+
+  """
+  行程起点的站点次序号
+  """
+  fromStationSeq: Int!
+
+  """
+  行程终点的站点次序号
+  """
+  toStationSeq: Int!
+
+  """
+  席位级别 (例如: "BUSINESS" 商务座, "FIRST" 一等座, "SECOND" 二等座)
+  """
+  seatClass: String!
+
+  """
+  实时原子位图预占计算后剩余的可售物理座席数 (结合长途专属配额与短途重叠冲突计算)
+  """
+  availableSeats: Int!
+}
+
+"""
+电子客票明细，对应于具体乘车人的实体凭证
+"""
+type Ticket {
+  """
+  客票唯一 36 位 UUID 标识
+  """
+  id: String!
+
+  """
+  乘车人身份证件号 (已完成 Collision-Guard 实名去重碰撞校验)
+  """
+  passengerId: String!
+
+  """
+  分配的物理座位号 (例如: "01A", "05F")
+  """
+  seatNo: String!
+
+  """
+  车厢号 (例如: "01", "08")
+  """
+  carriageNo: String!
+
+  """
+  本张客票折后财务单价金额 (基准单价: 100.00)
+  """
+  price: Float!
+}
+
+"""
+交易订单实体，维护整体乘车生命周期和支付/退票状态机 (CQRS Read View Model)
+"""
+type Order {
+  """
+  系统全局唯一订单号
+  """
+  id: String!
+
+  """
+  防重幂等客户端请求标头
+  """
+  requestId: String!
+
+  """
+  关联的 HELD/CONFIRMED 阶段物理占座预留 UUID
+  """
+  reservationId: String!
+
+  """
+  订单生命周期当前物理状态 (例如: "PENDING" 待付, "CONFIRMED" 已支付, "REFUNDED" 已全额退票, "CANCELLED" 已取消)
+  """
+  state: String!
+
+  """
+  当前订单合并的累计实付账务总金额
+  """
+  totalAmount: Float!
+
+  """
+  支付倒计时截止时钟 UTC 字符串
+  """
+  expiresAt: String!
+
+  """
+  本笔订单下包含的所有合并购票乘车人车票明细数组 (支持 Ticket 级微粒度解耦)
+  """
+  tickets: [Ticket!]!
+}
+
+type Query {
+  """
+  【读侧热路径 API】高并发实时可用区间余票查询。
+  结合 W3C Telemetry 分布式调用链追踪，直接穿透至只读哈希缓存，支持双向投影过滤。
+  """
+  queryAvailability(
+    """
+    排班 ID
+    """
+    scheduleId: Int!
+
+    """
+    出发站序号 (如: 1)
+    """
+    fromStationSeq: Int!
+
+    """
+    终到站序号 (如: 3)
+    """
+    toStationSeq: Int!
+
+    """
+    席级 (BUSINESS / FIRST / SECOND)
+    """
+    seatClass: String!
+  ): TrainAvailability!
+
+  """
+  【聚合 API】查询订单完整实体，支持递归加载嵌套关联的乘车人电子客票与车厢座位详情。
+  """
+  order(
+    """
+    要检索的目标订单号
+    """
+    id: String!
+  ): Order
+}
+
+type Mutation {
+  """
+  【变轨 API】针对指定订单下特定旅客发起的主动退票退款申请。
+  支持单张车票的部分退票（Tiered Partial Refund），自动执行阶梯式手续费扣减并原子释放 Redis 占座区间位图。
+  """
+  refundOrder(
+    """
+    订单 ID
+    """
+    orderId: String!
+
+    """
+    乘车人 ID。若为空，则执行整单全额退票 (Full Refund) 释放；若指定，则仅原子退掉该乘车人的车票。
+    """
+    passengerId: String
+  ): Boolean!
+}

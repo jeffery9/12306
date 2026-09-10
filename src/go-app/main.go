@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -639,27 +641,10 @@ func handlePay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
 
-func handleRefund(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req struct {
-		OrderID     string `json:"order_id"`
-		PassengerID string `json:"passenger_id,omitempty"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid body"})
-		return
-	}
-
-	ctx := context.Background()
+func executeRefundGo(ctx context.Context, orderID, passengerID string) error {
 	tx, err := db.Begin()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return err
 	}
 	defer tx.Rollback()
 
@@ -667,14 +652,12 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 	var reservationID string
 	var state string
 	var totalAmount float64
-	err = tx.QueryRow("SELECT reservation_id, state, total_amount FROM orders WHERE id = $1 FOR UPDATE", req.OrderID).Scan(&reservationID, &state, &totalAmount)
+	err = tx.QueryRow("SELECT reservation_id, state, total_amount FROM orders WHERE id = $1 FOR UPDATE", orderID).Scan(&reservationID, &state, &totalAmount)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Order not found"})
-		return
+		return fmt.Errorf("Order not found")
 	}
 	if state != "CONFIRMED" {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "Only paid orders in CONFIRMED state can be refunded"})
-		return
+		return fmt.Errorf("Only paid orders in CONFIRMED state can be refunded")
 	}
 
 	// 2. Fetch associated reservation with FOR UPDATE
@@ -682,8 +665,7 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 	var resState string
 	err = tx.QueryRow("SELECT schedule_id, seat_id, from_segment, to_segment, state FROM reservation WHERE id = $1 FOR UPDATE", reservationID).Scan(&scheduleID, &seatID, &fromSeq, &toSeq, &resState)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Reservation not found"})
-		return
+		return fmt.Errorf("Reservation not found")
 	}
 
 	ticketPrice := 100.00
@@ -691,12 +673,11 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 	handlingFee := ticketPrice * rate
 	refundAmount := ticketPrice - handlingFee
 
-	if req.PassengerID != "" {
+	if passengerID != "" {
 		// Partial refund
-		_, err = tx.Exec("DELETE FROM ticket WHERE reservation_id = $1 AND passenger_id = $2", reservationID, req.PassengerID)
+		_, err = tx.Exec("DELETE FROM ticket WHERE reservation_id = $1 AND passenger_id = $2", reservationID, passengerID)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+			return err
 		}
 
 		_, err = tx.Exec(`
@@ -705,18 +686,17 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 			WHERE schedule_id = $1 AND seat_id = $2 AND segment_no >= $3 AND segment_no < $4`,
 			scheduleID, seatID, fromSeq, toSeq)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+			return err
 		}
 
 		newAmount := totalAmount - ticketPrice
 		if newAmount < 0 {
 			newAmount = 0
 		}
-		_, _ = tx.Exec("UPDATE orders SET total_amount = $1 WHERE id = $2", newAmount, req.OrderID)
+		_, _ = tx.Exec("UPDATE orders SET total_amount = $1 WHERE id = $2", newAmount, orderID)
 	} else {
 		// Full refund
-		_, _ = tx.Exec("UPDATE orders SET state = 'REFUNDED', total_amount = 0.0 WHERE id = $1", req.OrderID)
+		_, _ = tx.Exec("UPDATE orders SET state = 'REFUNDED', total_amount = 0.0 WHERE id = $1", orderID)
 		_, _ = tx.Exec("UPDATE reservation SET state = 'RELEASED' WHERE id = $1", reservationID)
 
 		_, _ = tx.Exec(`
@@ -739,7 +719,7 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 
 	// 7. Write to Local Event Outbox for CQRS and Waitlist Matchers
 	payloadMap := map[string]interface{}{
-		"order_id":       req.OrderID,
+		"order_id":       orderID,
 		"reservation_id": reservationID,
 		"schedule_id":    scheduleID,
 		"seat_id":        seatID,
@@ -751,18 +731,399 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 	_, _ = tx.Exec(`
 		INSERT INTO outbox_event (event_id, aggregate_type, aggregate_id, event_type, payload, status)
 		VALUES ($1, 'Order', $2, 'ORDER_REFUNDED', $3, 'NEW')`,
-		eventID, req.OrderID, string(payloadBytes))
+		eventID, orderID, string(payloadBytes))
 
-	if err := tx.Commit(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Commit failed"})
+	return tx.Commit()
+}
+
+func handleRefund(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		OrderID     string `json:"order_id"`
+		PassengerID string `json:"passenger_id,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid body"})
+		return
+	}
+
+	ctx := r.Context()
+	err := executeRefundGo(ctx, req.OrderID, req.PassengerID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":       true,
-		"handling_fee":  handlingFee,
-		"refund_amount": refundAmount,
+		"handling_fee":  100.0 * 0.05,
+		"refund_amount": 100.0 - (100.0 * 0.05),
 	})
+}
+
+// ============================================================================
+// GraphQL Symmetrical Engine & Resolvers (Zero-Dependency)
+// ============================================================================
+
+type GraphQLRequest struct {
+	Query     string                 `json:"query"`
+	Variables map[string]interface{} `json:"variables"`
+}
+
+const GRAPHQL_SCHEMA_SDL = `
+type Station {
+  name: String!
+  sequence: Int!
+}
+
+type TrainAvailability {
+  scheduleId: Int!
+  fromStationSeq: Int!
+  toStationSeq: Int!
+  seatClass: String!
+  availableSeats: Int!
+}
+
+type Ticket {
+  id: String!
+  passengerId: String!
+  seatNo: String!
+  carriageNo: String!
+  price: Float!
+}
+
+type Order {
+  id: String!
+  requestId: String!
+  reservationId: String!
+  state: String!
+  totalAmount: Float!
+  expiresAt: String!
+  tickets: [Ticket!]!
+}
+
+type Query {
+  queryAvailability(
+    scheduleId: Int!
+    fromStationSeq: Int!
+    toStationSeq: Int!
+    seatClass: String!
+  ): TrainAvailability!
+
+  order(id: String!): Order
+}
+
+type Mutation {
+  refundOrder(orderId: String!, passengerId: String): Boolean!
+}
+`
+
+func extractFieldsGo(queryStr, startKeyword string) []interface{} {
+	idx := strings.Index(queryStr, startKeyword)
+	if idx == -1 {
+		return nil
+	}
+
+	openBraceIdx := strings.Index(queryStr[idx:], "{")
+	if openBraceIdx == -1 {
+		return nil
+	}
+	openBraceIdx += idx
+
+	count := 1
+	content := ""
+	for i := openBraceIdx + 1; i < len(queryStr); i++ {
+		char := queryStr[i]
+		if char == '{' {
+			count++
+		} else if char == '}' {
+			count--
+			if count == 0 {
+				content = queryStr[openBraceIdx+1 : i]
+				break
+			}
+		}
+	}
+
+	tokens := regexp.MustCompile(`(\s+|{|})`).Split(content, -1)
+	var fields []interface{}
+	currentNestedName := ""
+
+	for i := 0; i < len(tokens); i++ {
+		token := strings.TrimSpace(tokens[i])
+		if token == "" {
+			continue
+		}
+
+		if token == "{" {
+			nestedStart := i
+			count = 1
+			for j := i + 1; j < len(tokens); j++ {
+				t := strings.TrimSpace(tokens[j])
+				if t == "{" {
+					count++
+				} else if t == "}" {
+					count--
+					if count == 0 {
+						nestedEnd := j
+						nestedContentStr := strings.Join(tokens[nestedStart+1:nestedEnd], "")
+						subTokens := regexp.MustCompile(`[\s,]+`).Split(nestedContentStr, -1)
+						var nestedFields []string
+						for _, st := range subTokens {
+							stTrim := strings.TrimSpace(st)
+							if stTrim != "" && stTrim != "{" && stTrim != "}" {
+								nestedFields = append(nestedFields, stTrim)
+							}
+						}
+						fields = append(fields, []interface{}{currentNestedName, nestedFields})
+						i = nestedEnd
+						currentNestedName = ""
+						break
+					}
+				}
+			}
+			continue
+		} else if token == "}" {
+			continue
+		} else {
+			isNested := false
+			for k := i + 1; k < len(tokens); k++ {
+				nextT := strings.TrimSpace(tokens[k])
+				if nextT == "{" {
+					isNested = true
+					currentNestedName = token
+					break
+				} else if nextT != "" {
+					break
+				}
+			}
+			if !isNested {
+				fields = append(fields, token)
+			}
+		}
+	}
+	return fields
+}
+
+func getAvailability(ctx context.Context, scheduleID, fromSeq, toSeq int, seatClass string) (int, error) {
+	cacheKey := fmt.Sprintf("q:availability:%d:%s", scheduleID, seatClass)
+	field := fmt.Sprintf("%d-%d", fromSeq, toSeq)
+
+	val, err := rdb.HGet(ctx, cacheKey, field).Result()
+	if err == redis.Nil {
+		_ = recalculateAndProject(ctx, scheduleID)
+		val, err = rdb.HGet(ctx, cacheKey, field).Result()
+	}
+	if err != nil && err != redis.Nil {
+		return 0, err
+	}
+	count, _ := strconv.Atoi(val)
+	return count, nil
+}
+
+func handleGraphQL(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]string{"schema": GRAPHQL_SCHEMA_SDL})
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req GraphQLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid body"})
+		return
+	}
+
+	queryClean := strings.ReplaceAll(req.Query, "\n", " ")
+	queryClean = regexp.MustCompile(`\s+`).ReplaceAllString(queryClean, " ")
+
+	errors := []map[string]string{}
+	data := make(map[string]interface{})
+	ctx := r.Context()
+
+	// 1. Resolver: queryAvailability Query
+	if strings.Contains(queryClean, "queryAvailability") {
+		reSchedule := regexp.MustCompile(`scheduleId\s*:\s*(\d+)`)
+		reFrom := regexp.MustCompile(`fromStationSeq\s*:\s*(\d+)`)
+		reTo := regexp.MustCompile(`toStationSeq\s*:\s*(\d+)`)
+		reSeat := regexp.MustCompile(`seatClass\s*:\s*"([^"]+)"`)
+
+		mSchedule := reSchedule.FindStringSubmatch(queryClean)
+		mFrom := reFrom.FindStringSubmatch(queryClean)
+		mTo := reTo.FindStringSubmatch(queryClean)
+		mSeat := reSeat.FindStringSubmatch(queryClean)
+
+		if len(mSchedule) > 1 && len(mFrom) > 1 && len(mTo) > 1 && len(mSeat) > 1 {
+			scheduleID, _ := strconv.Atoi(mSchedule[1])
+			fromSeq, _ := strconv.Atoi(mFrom[1])
+			toSeq, _ := strconv.Atoi(mTo[1])
+			seatClass := mSeat[1]
+
+			count, err := getAvailability(ctx, scheduleID, fromSeq, toSeq, seatClass)
+			if err != nil {
+				errors = append(errors, map[string]string{"message": err.Error()})
+			} else {
+				rawData := map[string]interface{}{
+					"scheduleId":     scheduleID,
+					"fromStationSeq": fromSeq,
+					"toStationSeq":   toSeq,
+					"seatClass":      seatClass,
+					"availableSeats": count,
+				}
+
+				fields := extractFieldsGo(queryClean, "queryAvailability")
+				filteredRes := make(map[string]interface{})
+				for _, f := range fields {
+					if fStr, ok := f.(string); ok {
+						if fStr == "availableSeats" {
+							filteredRes[fStr] = rawData["availableSeats"]
+						} else if val, exists := rawData[fStr]; exists {
+							filteredRes[fStr] = val
+						}
+					}
+				}
+				data["queryAvailability"] = filteredRes
+			}
+		} else {
+			errors = append(errors, map[string]string{"message": "queryAvailability missing required parameters"})
+		}
+	}
+
+	// 2. Resolver: order Detail Query
+	if strings.Contains(queryClean, "order") && !strings.Contains(queryClean, "refundOrder") {
+		reOrderID := regexp.MustCompile(`order\s*\(\s*id\s*:\s*"([^"]+)"`)
+		mOrderID := reOrderID.FindStringSubmatch(queryClean)
+
+		if len(mOrderID) > 1 {
+			orderID := mOrderID[1]
+
+			var reservationID, state, expiresAt, requestID string
+			var totalAmount float64
+
+			err := db.QueryRow("SELECT request_id, reservation_id, state, total_amount, expires_at FROM orders WHERE id = $1", orderID).Scan(&requestID, &reservationID, &state, &totalAmount, &expiresAt)
+			if err == sql.ErrNoRows {
+				data["order"] = nil
+			} else if err != nil {
+				errors = append(errors, map[string]string{"message": err.Error()})
+			} else {
+				rows, _ := db.Query(`
+					SELECT t.id, t.passenger_id, t.price, s.carriage_no, s.seat_no 
+					FROM ticket t
+					JOIN seat s ON t.seat_id = s.id
+					WHERE t.reservation_id = $1`, reservationID)
+
+				ticketsData := []map[string]interface{}{}
+				if rows != nil {
+					for rows.Next() {
+						var tID, passengerID, carriageNo, seatNo string
+						var price float64
+						if err := rows.Scan(&tID, &passengerID, &price, &carriageNo, &seatNo); err == nil {
+							ticketsData = append(ticketsData, map[string]interface{}{
+								"id":          tID,
+								"passengerId": passengerID,
+								"seatNo":      seatNo,
+								"carriageNo":  carriageNo,
+								"price":       price,
+							})
+						}
+					}
+					rows.Close()
+				}
+
+				rawData := map[string]interface{}{
+					"id":            orderID,
+					"requestId":     requestID,
+					"reservationId": reservationID,
+					"state":         state,
+					"totalAmount":   totalAmount,
+					"expiresAt":     expiresAt,
+					"tickets":       ticketsData,
+				}
+
+				fields := extractFieldsGo(queryClean, "order")
+				filteredRes := make(map[string]interface{})
+				for _, f := range fields {
+					if fStr, ok := f.(string); ok {
+						if val, exists := rawData[fStr]; exists {
+							filteredRes[fStr] = val
+						}
+					} else if fArr, ok := f.([]interface{}); ok && len(fArr) == 2 {
+						keyName := fArr[0].(string)
+						subFields, _ := fArr[1].([]string)
+						if keyName == "tickets" {
+							filteredTickets := []map[string]interface{}{}
+							for _, tDict := range ticketsData {
+								tFiltered := make(map[string]interface{})
+								for _, sf := range subFields {
+									if val, exists := tDict[sf]; exists {
+										tFiltered[sf] = val
+									}
+								}
+								filteredTickets = append(filteredTickets, tFiltered)
+							}
+							filteredRes[keyName] = filteredTickets
+						}
+					}
+				}
+				data["order"] = filteredRes
+			}
+		} else {
+			errors = append(errors, map[string]string{"message": "order missing id parameter"})
+		}
+	}
+
+	// 3. Resolver: refundOrder Mutation
+	if strings.Contains(queryClean, "refundOrder") {
+		reOrderID := regexp.MustCompile(`orderId\s*:\s*"([^"]+)"`)
+		rePassengerID := regexp.MustCompile(`passengerId\s*:\s*"([^"]+)"`)
+
+		mOrderID := reOrderID.FindStringSubmatch(queryClean)
+		mPassengerID := rePassengerID.FindStringSubmatch(queryClean)
+
+		if len(mOrderID) > 1 {
+			orderID := mOrderID[1]
+			passengerID := ""
+			if len(mPassengerID) > 1 {
+				passengerID = mPassengerID[1]
+			}
+
+			err := executeRefundGo(ctx, orderID, passengerID)
+			if err != nil {
+				errors = append(errors, map[string]string{"message": err.Error()})
+				data["refundOrder"] = false
+			} else {
+				data["refundOrder"] = true
+			}
+		} else {
+			errors = append(errors, map[string]string{"message": "refundOrder missing orderId parameter"})
+		}
+	}
+
+	resp := make(map[string]interface{})
+	if len(data) > 0 {
+		resp["data"] = data
+	}
+	if len(errors) > 0 {
+		resp["errors"] = errors
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handleReschedule(w http.ResponseWriter, r *http.Request) {
@@ -1066,6 +1427,7 @@ func main() {
 	http.HandleFunc("/api/v1/reschedule", handleReschedule)
 	http.HandleFunc("/api/v1/ops/health", handleHealth)
 	http.HandleFunc("/api/v1/ops/trs/import-schedule", handleImportSchedule)
+	http.HandleFunc("/graphql", handleGraphQL)
 
 	port := os.Getenv("PORT")
 	if port == "" {

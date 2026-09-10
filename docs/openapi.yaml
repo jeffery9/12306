@@ -236,6 +236,54 @@ paths:
         '500':
           description: 导入格式错误或主外键冲突导致回滚。
 
+  /graphql:
+    get:
+      tags:
+        - CQRS Query (读大屏)
+      summary: 获取 GraphQL SDL 规格元数据自描述信息
+      description: 客户端可以通过该接口获取当前系统的自描述 GraphQL SDL (Schema Definition Language) 规格串。
+      responses:
+        '200':
+          description: 获取自描述 SDL 成功。
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schema:
+                    type: string
+                    description: 12306 全局统一 GraphQL SDL
+    post:
+      tags:
+        - CQRS Query (读大屏)
+      summary: GraphQL 统一多资源聚合自描述查询接口
+      description: 接收一个大括号 GraphQL 查询/突变，动态提取 AST 词法，对结果进行高效的、无 Over-fetching 的选择投影过滤。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  description: 符合 12306 SDL 的 GraphQL Query/Mutation 字符串
+                  example: |
+                    query {
+                      queryAvailability(scheduleId: 1, fromStationSeq: 1, toStationSeq: 3, seatClass: "BUSINESS") {
+                        availableSeats
+                        scheduleId
+                      }
+                    }
+                variables:
+                  type: object
+                  description: 变量哈希
+      responses:
+        '200':
+          description: GraphQL 查询或突变成功执行并按需过滤。
+
 components:
   schemas:
     ReserveRequest:

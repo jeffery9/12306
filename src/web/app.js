@@ -58,6 +58,105 @@ const DevopsConsole = {
   emits: ["cron-release", "quota-release"]
 };
 
+// 6. Component: GraphQLConsole
+const GraphQLConsole = {
+  template: "#graphql-console-template",
+  props: {
+    backendUrl: { type: String, required: true },
+    orderId: { type: String, default: null }
+  },
+  setup(props) {
+    const { ref, onMounted, watch } = Vue || { ref: window.Vue.ref, onMounted: window.Vue.onMounted, watch: window.Vue.watch };
+    const activeQuery = ref(`query {
+  queryAvailability(scheduleId: 1, fromStationSeq: 1, toStationSeq: 2, seatClass: "BUSINESS") {
+    availableSeats
+    scheduleId
+  }
+}`);
+    const schemaSdl = ref("正在加载 12306 GraphQL Schema SDL...");
+    const resultJson = ref("");
+    const isRunning = ref(false);
+
+    const fetchSchema = async () => {
+      try {
+        const response = await fetch(`${props.backendUrl}/graphql`);
+        if (!response.ok) throw new Error("获取 Schema 失败");
+        const data = await response.json();
+        schemaSdl.value = data.schema || "Schema 空或未定义";
+      } catch (error) {
+        schemaSdl.value = `获取 Schema 异常:\n${error.message}\n请确保后端 Python 引擎正常运行在 ${props.backendUrl}`;
+      }
+    };
+
+    const runQuery = async () => {
+      isRunning.value = true;
+      resultJson.value = "正在发送 GraphQL 查询请求...";
+      try {
+        const response = await fetch(`${props.backendUrl}/graphql`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: activeQuery.value })
+        });
+        const data = await response.json();
+        resultJson.value = JSON.stringify(data, null, 2);
+      } catch (error) {
+        resultJson.value = `执行异常:\n${error.message}`;
+      } finally {
+        isRunning.value = false;
+      }
+    };
+
+    const selectTemplate = (type) => {
+      if (type === 'query_availability') {
+        activeQuery.value = `query {
+  queryAvailability(scheduleId: 1, fromStationSeq: 1, toStationSeq: 2, seatClass: "BUSINESS") {
+    availableSeats
+    scheduleId
+  }
+}`;
+      } else if (type === 'order_details') {
+        const oId = props.orderId || "ORD_GQL_TEST_01";
+        activeQuery.value = `query {
+  order(id: "${oId}") {
+    id
+    state
+    totalAmount
+    tickets {
+      id
+      seatNo
+      carriageNo
+      price
+    }
+  }
+}`;
+      } else if (type === 'refund_order') {
+        const oId = props.orderId || "ORD_GQL_TEST_01";
+        activeQuery.value = `mutation {
+  refundOrder(orderId: "${oId}")
+}`;
+      }
+    };
+
+    onMounted(() => {
+      fetchSchema();
+    });
+
+    watch(() => props.backendUrl, () => {
+      fetchSchema();
+    });
+
+    return {
+      activeQuery,
+      schemaSdl,
+      resultJson,
+      isRunning,
+      runQuery,
+      selectTemplate,
+      fetchSchema
+    };
+  }
+};
+
 // Main App Orchestrator Instance
 const app = createApp({
   components: {
@@ -65,7 +164,8 @@ const app = createApp({
     TicketBooking,
     OrderPayment,
     SystemLogs,
-    DevopsConsole
+    DevopsConsole,
+    GraphQLConsole
   },
   setup() {
     // Configuration Constants

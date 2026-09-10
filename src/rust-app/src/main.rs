@@ -118,6 +118,7 @@ async main() {
         .route("/api/v1/reschedule", post(reschedule_handler))
         .route("/api/v1/ops/health", get(health_handler))
         .route("/api/v1/ops/trs/import-schedule", post(import_schedule_handler))
+        .route("/graphql", post(graphql_post_handler).get(graphql_schema_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -433,25 +434,22 @@ async fn pay_handler(
 }
 
 // D2. 模拟退票与票池发还 (Refund Process - POST)
-async fn refund_handler(
-    State(state): State<AppState>,
-    Json(req): Json<RefundRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut tx = state.db.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+async fn execute_refund_rust(state: &AppState, req: &RefundRequest) -> Result<(), String> {
+    let mut tx = state.db.begin().await.map_err(|e| e.to_string())?;
 
     // 1. 悲观行锁锁定订单
     let row: Option<(String, String, f64)> = sqlx::query_as("SELECT reservation_id, state, total_amount FROM orders WHERE id = $1 FOR UPDATE")
         .bind(&req.order_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| e.to_string())?;
 
     let (reservation_id, order_state, total_amount) = match row {
         Some(r) => r,
-        None => return Err(StatusCode::NOT_FOUND),
+        None => return Err("Order not found".to_string()),
     };
     if order_state != "CONFIRMED" {
-        return Err(StatusCode::CONFLICT);
+        return Err("Only CONFIRMED orders can be refunded".to_string());
     }
 
     // 2. 锁定关联预留
@@ -459,12 +457,12 @@ async fn refund_handler(
         .bind(&reservation_id)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| e.to_string())?;
 
     let (schedule_id, seat_id, from_seq, to_seq) = res;
 
-    let ticket_price = 100.00; // 基准单价
-    let rate = 0.05; // 48小时退票基准手续费比例 5%
+    let ticket_price = 100.00;
+    let rate = 0.05;
     let handling_fee = ticket_price * rate;
     let refund_amount = ticket_price - handling_fee;
 
@@ -475,7 +473,7 @@ async fn refund_handler(
             .bind(passenger_id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| e.to_string())?;
 
         sqlx::query("UPDATE seat_segment SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 WHERE schedule_id = $1 AND seat_id = $2 AND segment_no >= $3 AND segment_no < $4")
             .bind(schedule_id)
@@ -484,7 +482,7 @@ async fn refund_handler(
             .bind(to_seq)
             .execute(&mut *tx)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| e.to_string())?;
 
         let new_amount = (total_amount - ticket_price).max(0.0);
         sqlx::query("UPDATE orders SET total_amount = $1 WHERE id = $2")
@@ -492,20 +490,20 @@ async fn refund_handler(
             .bind(&req.order_id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| e.to_string())?;
     } else {
         // 全额退票
         sqlx::query("UPDATE orders SET state = 'REFUNDED', total_amount = 0.0 WHERE id = $1")
             .bind(&req.order_id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| e.to_string())?;
 
         sqlx::query("UPDATE reservation SET state = 'RELEASED' WHERE id = $1")
             .bind(&reservation_id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| e.to_string())?;
 
         sqlx::query("UPDATE seat_segment SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 WHERE schedule_id = $1 AND seat_id = $2 AND segment_no >= $3 AND segment_no < $4")
             .bind(schedule_id)
@@ -514,14 +512,14 @@ async fn refund_handler(
             .bind(to_seq)
             .execute(&mut *tx)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| e.to_string())?;
     }
 
     // 4. Redis Lua位图原子发还
     let mask = get_mask(from_seq, to_seq);
     revert_redis(&state.redis, schedule_id, seat_id, &reservation_id, mask)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| e.to_string())?;
 
     // 5. 写入事件发件箱
     let payload = serde_json::json!({
@@ -538,15 +536,348 @@ async fn refund_handler(
         .bind(payload.to_string())
         .execute(&mut *tx)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| e.to_string())?;
 
-    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "handling_fee": handling_fee,
-        "refund_amount": refund_amount
-    })))
+async fn refund_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RefundRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match execute_refund_rust(&state, &req).await {
+        Ok(_) => {
+            let ticket_price = 100.00;
+            let handling_fee = ticket_price * 0.05;
+            let refund_amount = ticket_price - handling_fee;
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "handling_fee": handling_fee,
+                "refund_amount": refund_amount
+            })))
+        }
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+// ============================================================================
+// GraphQL Symmetrical Engine & Resolvers (Zero-Dependency)
+// ============================================================================
+
+#[derive(Deserialize)]
+struct GraphQLRequest {
+    query: String,
+    _variables: Option<serde_json::Value>,
+}
+
+const GRAPHQL_SCHEMA_SDL: &str = r#"
+type Station {
+  name: String!
+  sequence: Int!
+}
+
+type TrainAvailability {
+  scheduleId: Int!
+  fromStationSeq: Int!
+  toStationSeq: Int!
+  seatClass: String!
+  availableSeats: Int!
+}
+
+type Ticket {
+  id: String!
+  passengerId: String!
+  seatNo: String!
+  carriageNo: String!
+  price: Float!
+}
+
+type Order {
+  id: String!
+  requestId: String!
+  reservationId: String!
+  state: String!
+  totalAmount: Float!
+  expiresAt: String!
+  tickets: [Ticket!]!
+}
+
+type Query {
+  queryAvailability(
+    scheduleId: Int!
+    fromStationSeq: Int!
+    toStationSeq: Int!
+    seatClass: String!
+  ): TrainAvailability!
+
+  order(id: String!): Order
+}
+
+type Mutation {
+  refundOrder(orderId: String!, passengerId: String): Boolean!
+}
+"#;
+
+fn find_arg_i32(query: &str, key: &str) -> Option<i32> {
+    if let Some(pos) = query.find(key) {
+        let after = &query[pos + key.len()..];
+        let mut num_str = String::new();
+        let mut started = false;
+        for c in after.chars() {
+            if c.is_ascii_digit() {
+                started = true;
+                num_str.push(c);
+            } else if started {
+                break;
+            } else if c == ':' || c.is_whitespace() {
+                continue;
+            } else {
+                break;
+            }
+        }
+        num_str.parse::<i32>().ok()
+    } else {
+        None
+    }
+}
+
+fn find_arg_string(query: &str, key: &str) -> Option<String> {
+    if let Some(pos) = query.find(key) {
+        let after = &query[pos + key.len()..];
+        let mut started = false;
+        let mut val_str = String::new();
+        for c in after.chars() {
+            if c == '"' || c == '\'' {
+                if started {
+                    break;
+                } else {
+                    started = true;
+                }
+            } else if started {
+                val_str.push(c);
+            } else if c == ':' || c.is_whitespace() {
+                continue;
+            } else {
+                break;
+            }
+        }
+        if !val_str.is_empty() { Some(val_str) } else { None }
+    } else {
+        None
+    }
+}
+
+fn filter_availability_rust(query: &str, count: i32, schedule_id: i32, from_seq: i32, to_seq: i32, seat_class: &str) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    if let Some(pos) = query.find("queryAvailability") {
+        let sub = &query[pos..];
+        if sub.contains("availableSeats") {
+            map.insert("availableSeats".to_string(), serde_json::Value::Number(count.into()));
+        }
+        if sub.contains("scheduleId") {
+            map.insert("scheduleId".to_string(), serde_json::Value::Number(schedule_id.into()));
+        }
+        if sub.contains("fromStationSeq") {
+            map.insert("fromStationSeq".to_string(), serde_json::Value::Number(from_seq.into()));
+        }
+        if sub.contains("toStationSeq") {
+            map.insert("toStationSeq".to_string(), serde_json::Value::Number(to_seq.into()));
+        }
+        if sub.contains("seatClass") {
+            map.insert("seatClass".to_string(), serde_json::Value::String(seat_class.to_string()));
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+fn filter_order_rust(query: &str, order_id: &str, request_id: &str, reservation_id: &str, state: &str, total_amount: f64, expires_at: &str, tickets: Vec<serde_json::Value>) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    if let Some(pos) = query.find("order") {
+        let sub = &query[pos..];
+        if sub.contains("id") {
+            map.insert("id".to_string(), serde_json::Value::String(order_id.to_string()));
+        }
+        if sub.contains("requestId") {
+            map.insert("requestId".to_string(), serde_json::Value::String(request_id.to_string()));
+        }
+        if sub.contains("reservationId") {
+            map.insert("reservationId".to_string(), serde_json::Value::String(reservation_id.to_string()));
+        }
+        if sub.contains("state") {
+            map.insert("state".to_string(), serde_json::Value::String(state.to_string()));
+        }
+        if sub.contains("totalAmount") {
+            map.insert("totalAmount".to_string(), serde_json::json!(total_amount));
+        }
+        if sub.contains("expiresAt") {
+            map.insert("expiresAt".to_string(), serde_json::Value::String(expires_at.to_string()));
+        }
+        if sub.contains("tickets") {
+            let mut filtered_tickets = Vec::new();
+            for t in tickets {
+                if let serde_json::Value::Object(t_map) = t {
+                    let mut t_filtered = serde_json::Map::new();
+                    if sub.contains("id") {
+                        if let Some(v) = t_map.get("id") {
+                            t_filtered.insert("id".to_string(), v.clone());
+                        }
+                    }
+                    if sub.contains("seatNo") {
+                        if let Some(v) = t_map.get("seatNo") {
+                            t_filtered.insert("seatNo".to_string(), v.clone());
+                        }
+                    }
+                    if sub.contains("carriageNo") {
+                        if let Some(v) = t_map.get("carriageNo") {
+                            t_filtered.insert("carriageNo".to_string(), v.clone());
+                        }
+                    }
+                    if sub.contains("price") {
+                        if let Some(v) = t_map.get("price") {
+                            t_filtered.insert("price".to_string(), v.clone());
+                        }
+                    }
+                    if sub.contains("passengerId") {
+                        if let Some(v) = t_map.get("passengerId") {
+                            t_filtered.insert("passengerId".to_string(), v.clone());
+                        }
+                    }
+                    filtered_tickets.push(serde_json::Value::Object(t_filtered));
+                }
+            }
+            map.insert("tickets".to_string(), serde_json::Value::Array(filtered_tickets));
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+async fn graphql_schema_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "schema": GRAPHQL_SCHEMA_SDL }))
+}
+
+async fn graphql_post_handler(
+    State(state): State<AppState>,
+    Json(req): Json<GraphQLRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let query_clean = req.query.replace('\n', " ");
+    let mut data = serde_json::Map::new();
+    let mut errors = Vec::new();
+
+    // 1. queryAvailability Query
+    if query_clean.contains("queryAvailability") {
+        if let (Some(schedule_id), Some(from_seq), Some(to_seq), Some(seat_class)) = (
+            find_arg_i32(&query_clean, "scheduleId"),
+            find_arg_i32(&query_clean, "fromStationSeq"),
+            find_arg_i32(&query_clean, "toStationSeq"),
+            find_arg_string(&query_clean, "seatClass"),
+        ) {
+            let cache_key = format!("q:availability:{}:{}", schedule_id, seat_class);
+            let field = format!("{}-{}", from_seq, to_seq);
+
+            let mut redis_conn = state.redis.get_async_connection().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let count_str: Result<String, _> = redis_conn.hget(&cache_key, &field).await;
+
+            let count = match count_str {
+                Ok(val) => val.parse::<i32>().unwrap_or(0),
+                Err(_) => {
+                    let _ = recalculate_and_project(&state.db, &state.redis, schedule_id).await;
+                    let count_str_retry: Result<String, _> = redis_conn.hget(&cache_key, &field).await;
+                    count_str_retry.ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(0)
+                }
+            };
+
+            let filtered = filter_availability_rust(&query_clean, count, schedule_id, from_seq, to_seq, &seat_class);
+            data.insert("queryAvailability".to_string(), filtered);
+        } else {
+            errors.push(serde_json::json!({ "message": "queryAvailability missing required parameters" }));
+        }
+    }
+
+    // 2. order Detail Query
+    if query_clean.contains("order") && !query_clean.contains("refundOrder") {
+        if let Some(order_id) = find_arg_string(&query_clean, "id") {
+            let row: Option<(String, String, String, f64, chrono::NaiveDateTime)> = sqlx::query_as(
+                "SELECT request_id, reservation_id, state, total_amount, expires_at FROM orders WHERE id = $1"
+            )
+            .bind(&order_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if let Some((request_id, reservation_id, order_state, total_amount, expires_at)) = row {
+                let ticket_rows: Vec<(String, String, f64, String, String)> = sqlx::query_as(
+                    "SELECT t.id, t.passenger_id, t.price, s.carriage_no, s.seat_no 
+                     FROM ticket t 
+                     JOIN seat s ON t.seat_id = s.id 
+                     WHERE t.reservation_id = $1"
+                )
+                .bind(&reservation_id)
+                .fetch_all(&state.db)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+                let mut tickets = Vec::new();
+                for r in ticket_rows {
+                    tickets.push(serde_json::json!({
+                        "id": r.0,
+                        "passengerId": r.1,
+                        "price": r.2,
+                        "carriageNo": r.3,
+                        "seatNo": r.4
+                    }));
+                }
+
+                let filtered = filter_order_rust(
+                    &query_clean,
+                    &order_id,
+                    &request_id,
+                    &reservation_id,
+                    &order_state,
+                    total_amount,
+                    &expires_at.to_string(),
+                    tickets
+                );
+                data.insert("order".to_string(), filtered);
+            } else {
+                data.insert("order".to_string(), serde_json::Value::Null);
+            }
+        } else {
+            errors.push(serde_json::json!({ "message": "order missing id parameter" }));
+        }
+    }
+
+    // 3. refundOrder Mutation
+    if query_clean.contains("refundOrder") {
+        if let Some(order_id) = find_arg_string(&query_clean, "orderId") {
+            let passenger_id = find_arg_string(&query_clean, "passengerId");
+            let refund_req = RefundRequest {
+                order_id: order_id.clone(),
+                passenger_id,
+            };
+
+            match execute_refund_rust(&state, &refund_req).await {
+                Ok(_) => {
+                    data.insert("refundOrder".to_string(), serde_json::Value::Bool(true));
+                }
+                Err(err_msg) => {
+                    errors.push(serde_json::json!({ "message": err_msg }));
+                    data.insert("refundOrder".to_string(), serde_json::Value::Bool(false));
+                }
+            }
+        } else {
+            errors.push(serde_json::json!({ "message": "refundOrder missing orderId parameter" }));
+        }
+    }
+
+    let mut resp = serde_json::Map::new();
+    if !data.is_empty() {
+        resp.insert("data".to_string(), serde_json::Value::Object(data));
+    }
+    if !errors.is_empty() {
+        resp.insert("errors".to_string(), serde_json::Value::Array(errors));
+    }
+    Ok(Json(serde_json::Value::Object(resp)))
 }
 
 // D3. 原子改签与嵌套 Savepoint 校验 (Reschedule Process - POST)

@@ -393,163 +393,222 @@ app.MapPost("/api/v1/refund", async (
     NpgsqlDataSource dataSource,
     IConnectionMultiplexer redis) =>
 {
-    using (var conn = await dataSource.OpenConnectionAsync())
-    using (var tx = await conn.BeginTransactionAsync(IsolationLevel.ReadCommitted))
+    bool success = await TicketingEngine.ExecuteRefundCsAsync(req.order_id, req.passenger_id, dataSource, redis);
+    if (success)
     {
-        try
-        {
-            // 1. 行锁订单
-            string reservationId = "";
-            string orderState = "";
-            decimal totalAmount = 0;
-            using (var orderCmd = new NpgsqlCommand("SELECT reservation_id, state, total_amount FROM orders WHERE id = @id FOR UPDATE", conn, tx))
-            {
-                orderCmd.Parameters.AddWithValue("id", req.order_id);
-                using (var reader = await orderCmd.ExecuteReaderAsync())
-                {
-                    if (await reader.ReadAsync())
-                    {
-                        reservationId = reader.GetString(0);
-                        orderState = reader.GetString(1);
-                        totalAmount = reader.GetDecimal(2);
-                    }
-                }
-            }
+        decimal ticketPrice = 100.00m;
+        decimal rate = 0.05m;
+        decimal handlingFee = ticketPrice * rate;
+        decimal refundAmount = ticketPrice - handlingFee;
+        return Results.Ok(new { success = true, handling_fee = handlingFee, refund_amount = refundAmount });
+    }
+    else
+    {
+        return Results.BadRequest(new { error = "Refund failed" });
+    }
+});
 
-            if (orderState != "CONFIRMED")
-            {
-                return Results.Conflict(new { error = "Only paid orders in CONFIRMED state can be refunded" });
-            }
+// ============================================================================
+// GraphQL Symmetrical Engine & Resolvers (Zero-Dependency)
+// ============================================================================
 
-            // 2. 行锁预留
-            int scheduleId = 0, seatId = 0, fromSeq = 0, toSeq = 0;
-            using (var resCmd = new NpgsqlCommand("SELECT schedule_id, seat_id, from_segment, to_segment FROM reservation WHERE id = @id FOR UPDATE", conn, tx))
-            {
-                resCmd.Parameters.AddWithValue("id", reservationId);
-                using (var reader = await resCmd.ExecuteReaderAsync())
-                {
-                    if (await reader.ReadAsync())
-                    {
-                        scheduleId = reader.GetInt32(0);
-                        seatId = reader.GetInt32(1);
-                        fromSeq = reader.GetInt32(2);
-                        toSeq = reader.GetInt32(3);
-                    }
-                }
-            }
+const string GRAPHQL_SCHEMA_SDL = @"
+type Station {
+  name: String!
+  sequence: Int!
+}
 
-            decimal ticketPrice = 100.00m;
-            decimal rate = 0.05m;
-            decimal handlingFee = ticketPrice * rate;
-            decimal refundAmount = ticketPrice - handlingFee;
+type TrainAvailability {
+  scheduleId: Int!
+  fromStationSeq: Int!
+  toStationSeq: Int!
+  seatClass: String!
+  availableSeats: Int!
+}
 
-            if (!string.IsNullOrEmpty(req.passenger_id))
-            {
-                // 部分退票：删除乘车人车票
-                using (var delCmd = new NpgsqlCommand("DELETE FROM ticket WHERE reservation_id = @res_id AND passenger_id = @p_id", conn, tx))
-                {
-                    delCmd.Parameters.AddWithValue("res_id", reservationId);
-                    delCmd.Parameters.AddWithValue("p_id", req.passenger_id);
-                    await delCmd.ExecuteNonQueryAsync();
-                }
+type Ticket {
+  id: String!
+  passengerId: String!
+  seatNo: String!
+  carriageNo: String!
+  price: Float!
+}
 
-                // 物理回退席位段 AVAILABLE
-                using (var upSegCmd = new NpgsqlCommand(@"
-                    UPDATE seat_segment 
-                    SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 
-                    WHERE schedule_id = @sched AND seat_id = @sid AND segment_no >= @from AND segment_no < @to", conn, tx))
-                {
-                    upSegCmd.Parameters.AddWithValue("sched", scheduleId);
-                    upSegCmd.Parameters.AddWithValue("sid", seatId);
-                    upSegCmd.Parameters.AddWithValue("from", fromSeq);
-                    upSegCmd.Parameters.AddWithValue("to", toSeq);
-                    await upSegCmd.ExecuteNonQueryAsync();
-                }
+type Order {
+  id: String!
+  requestId: String!
+  reservationId: String!
+  state: String!
+  totalAmount: Float!
+  expiresAt: String!
+  tickets: [Ticket!]!
+}
 
-                // 扣减订单总价
-                decimal newAmount = Math.Max(0, totalAmount - ticketPrice);
-                using (var upOrdCmd = new NpgsqlCommand("UPDATE orders SET total_amount = @amount WHERE id = @id", conn, tx))
-                {
-                    upOrdCmd.Parameters.AddWithValue("amount", newAmount);
-                    upOrdCmd.Parameters.AddWithValue("id", req.order_id);
-                    await upOrdCmd.ExecuteNonQueryAsync();
-                }
-            }
-            else
-            {
-                // 全额退票
-                using (var upOrdCmd = new NpgsqlCommand("UPDATE orders SET state = 'REFUNDED', total_amount = 0 WHERE id = @id", conn, tx))
-                {
-                    upOrdCmd.Parameters.AddWithValue("id", req.order_id);
-                    await upOrdCmd.ExecuteNonQueryAsync();
-                }
+type Query {
+  queryAvailability(
+    scheduleId: Int!
+    fromStationSeq: Int!
+    toStationSeq: Int!
+    seatClass: String!
+  ): TrainAvailability!
 
-                using (var upResCmd = new NpgsqlCommand("UPDATE reservation SET state = 'RELEASED' WHERE id = @id", conn, tx))
-                {
-                    upResCmd.Parameters.AddWithValue("id", reservationId);
-                    await upResCmd.ExecuteNonQueryAsync();
-                }
+  order(id: String!): Order
+}
 
-                using (var upSegCmd = new NpgsqlCommand(@"
-                    UPDATE seat_segment 
-                    SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 
-                    WHERE schedule_id = @sched AND seat_id = @sid AND segment_no >= @from AND segment_no < @to", conn, tx))
-                {
-                    upSegCmd.Parameters.AddWithValue("sched", scheduleId);
-                    upSegCmd.Parameters.AddWithValue("sid", seatId);
-                    upSegCmd.Parameters.AddWithValue("from", fromSeq);
-                    upSegCmd.Parameters.AddWithValue("to", toSeq);
-                    await upSegCmd.ExecuteNonQueryAsync();
-                }
-            }
+type Mutation {
+  refundOrder(orderId: String!, passengerId: String): Boolean!
+}
+";
 
-            // Redis 释放席位
-            int mask = 0;
-            for (int i = fromSeq; i < toSeq; i++)
-            {
-                mask |= (1 << (i - 1));
-            }
+app.MapGet("/graphql", () => Results.Ok(new { schema = GRAPHQL_SCHEMA_SDL }));
+
+app.MapPost("/graphql", async (
+    [FromBody] JsonElement req,
+    NpgsqlDataSource dataSource,
+    IConnectionMultiplexer redis) =>
+{
+    string query = req.TryGetProperty("query", out var queryProp) ? (queryProp.ValueKind == JsonValueKind.String ? queryProp.GetString() ?? "" : "") : "";
+    string queryClean = query.Replace('\n', ' ').Replace("\r", " ");
+    queryClean = System.Text.RegularExpressions.Regex.Replace(queryClean, @"\s+", " ");
+
+    var data = new Dictionary<string, object>();
+    var errors = new List<object>();
+
+    int? findArgInt(string q, string key) {
+        var m = System.Text.RegularExpressions.Regex.Match(q, key + @"\s*:\s*(\d+)");
+        return m.Success ? int.Parse(m.Groups[1].Value) : (int?)null;
+    }
+
+    string findArgStr(string q, string key) {
+        var m = System.Text.RegularExpressions.Regex.Match(q, key + @"\s*:\s*""([^""]+)""");
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
+    // 1. Resolver: queryAvailability
+    if (queryClean.Contains("queryAvailability")) {
+        int? scheduleId = findArgInt(queryClean, "scheduleId");
+        int? fromSeq = findArgInt(queryClean, "fromStationSeq");
+        int? toSeq = findArgInt(queryClean, "toStationSeq");
+        string seatClass = findArgStr(queryClean, "seatClass");
+
+        if (scheduleId != null && fromSeq != null && toSeq != null && seatClass != null) {
             var db = redis.GetDatabase();
-            string seatKey = $"r:{scheduleId}:seat:{seatId}";
-            string resKey = $"r:{scheduleId}:reservation:{reservationId}";
-            await db.ScriptEvaluateAsync(@"
-                local seat_key = KEYS[1]
-                local res_key = KEYS[2]
-                local mask = tonumber(ARGV[1])
-                local res_id = ARGV[2]
+            string cacheKey = $"q:availability:{scheduleId}:{seatClass}";
+            string field = $"{fromSeq}-{toSeq}";
 
-                local current_mask = tonumber(redis.call('GET', seat_key) or '0')
-                local new_mask = bit.band(current_mask, bit.bnot(mask))
-                redis.call('SET', seat_key, new_mask)
-                redis.call('DEL', res_key)
-                return 1",
-                new RedisKey[] { seatKey, resKey },
-                new RedisValue[] { mask, reservationId });
-
-            // 写入发件箱
-            var payload = new { order_id = req.order_id, schedule_id = scheduleId, reservation_id = reservationId, handling_fee = handlingFee, refund_amount = refundAmount };
-            string payloadStr = JsonSerializer.Serialize(payload);
-            string eventId = Guid.NewGuid().ToString();
-
-            using (var outboxCmd = new NpgsqlCommand(@"
-                INSERT INTO outbox_event (event_id, aggregate_type, aggregate_id, event_type, payload, status) 
-                VALUES (@id, 'Order', @agg_id, 'ORDER_REFUNDED', @payload::jsonb, 'NEW')", conn, tx))
-            {
-                outboxCmd.Parameters.AddWithValue("id", eventId);
-                outboxCmd.Parameters.AddWithValue("agg_id", req.order_id);
-                outboxCmd.Parameters.AddWithValue("payload", payloadStr);
-                await outboxCmd.ExecuteNonQueryAsync();
+            var cacheVal = await db.HashGetAsync(cacheKey, field);
+            if (cacheVal.IsNullOrEmpty) {
+                await TicketingEngine.RecalculateAndProjectAsync(dataSource, db, scheduleId.Value, seatClass);
+                cacheVal = await db.HashGetAsync(cacheKey, field);
             }
+            int count = cacheVal.HasValue ? int.Parse(cacheVal.ToString()) : 0;
 
-            await tx.CommitAsync();
-            return Results.Ok(new { success = true, handling_fee = handlingFee, refund_amount = refundAmount });
-        }
-        catch (Exception ex)
-        {
-            await tx.RollbackAsync();
-            return Results.BadRequest(new { error = ex.Message });
+            var filtered = new Dictionary<string, object>();
+            if (queryClean.Contains("availableSeats")) filtered["availableSeats"] = count;
+            if (queryClean.Contains("scheduleId")) filtered["scheduleId"] = scheduleId;
+            if (queryClean.Contains("fromStationSeq")) filtered["fromStationSeq"] = fromSeq;
+            if (queryClean.Contains("toStationSeq")) filtered["toStationSeq"] = toSeq;
+            if (queryClean.Contains("seatClass")) filtered["seatClass"] = seatClass;
+
+            data["queryAvailability"] = filtered;
+        } else {
+            errors.Add(new { message = "queryAvailability missing required parameters" });
         }
     }
+
+    // 2. Resolver: order
+    if (queryClean.Contains("order") && !queryClean.Contains("refundOrder")) {
+        string orderId = findArgStr(queryClean, "id");
+        if (orderId != null) {
+            string requestId = "", reservationId = "", state = "", expiresAtStr = "";
+            decimal totalAmount = 0;
+
+            using (var conn = await dataSource.OpenConnectionAsync())
+            using (var ordCmd = new NpgsqlCommand("SELECT request_id, reservation_id, state, total_amount, expires_at FROM orders WHERE id = @id", conn)) {
+                ordCmd.Parameters.AddWithValue("id", orderId);
+                using (var reader = await ordCmd.ExecuteReaderAsync()) {
+                    if (await reader.ReadAsync()) {
+                        requestId = reader.GetString(0);
+                        reservationId = reader.GetString(1);
+                        state = reader.GetString(2);
+                        totalAmount = reader.GetDecimal(3);
+                        expiresAtStr = reader.GetDateTime(4).ToString("o");
+                    }
+                }
+            }
+
+            if (!string.IsNullOrEmpty(reservationId)) {
+                var ticketsList = new List<Dictionary<string, object>>();
+                using (var conn = await dataSource.OpenConnectionAsync())
+                using (var tkCmd = new NpgsqlCommand(@"
+                    SELECT t.id, t.passenger_id, t.price, s.carriage_no, s.seat_no 
+                    FROM ticket t 
+                    JOIN seat s ON t.seat_id = s.id 
+                    WHERE t.reservation_id = @res_id", conn)) {
+                    tkCmd.Parameters.AddWithValue("res_id", reservationId);
+                    using (var reader = await tkCmd.ExecuteReaderAsync()) {
+                        while (await reader.ReadAsync()) {
+                            ticketsList.Add(new Dictionary<string, object> {
+                                { "id", reader.GetString(0) },
+                                { "passengerId", reader.GetString(1) },
+                                { "price", (double)reader.GetDecimal(2) },
+                                { "carriageNo", reader.GetString(3) },
+                                { "seatNo", reader.GetString(4) }
+                            });
+                        }
+                    }
+                }
+
+                var filtered = new Dictionary<string, object>();
+                if (queryClean.Contains("id")) filtered["id"] = orderId;
+                if (queryClean.Contains("requestId")) filtered["requestId"] = requestId;
+                if (queryClean.Contains("reservationId")) filtered["reservationId"] = reservationId;
+                if (queryClean.Contains("state")) filtered["state"] = state;
+                if (queryClean.Contains("totalAmount")) filtered["totalAmount"] = (double)totalAmount;
+                if (queryClean.Contains("expiresAt")) filtered["expiresAt"] = expiresAtStr;
+                if (queryClean.Contains("tickets")) {
+                    var filteredTickets = new List<Dictionary<string, object>>();
+                    foreach (var t in ticketsList) {
+                        var tf = new Dictionary<string, object>();
+                        if (queryClean.Contains("id")) tf["id"] = t["id"];
+                        if (queryClean.Contains("passengerId")) tf["passengerId"] = t["passengerId"];
+                        if (queryClean.Contains("price")) tf["price"] = t["price"];
+                        if (queryClean.Contains("carriageNo")) tf["carriageNo"] = t["carriageNo"];
+                        if (queryClean.Contains("seatNo")) tf["seatNo"] = t["seatNo"];
+                        filteredTickets.Add(tf);
+                    }
+                    filtered["tickets"] = filteredTickets;
+                }
+
+                data["order"] = filtered;
+            } else {
+                data["order"] = null;
+            }
+        } else {
+            errors.Add(new { message = "order missing id parameter" });
+        }
+    }
+
+    // 3. Resolver: refundOrder
+    if (queryClean.Contains("refundOrder")) {
+        string orderId = findArgStr(queryClean, "orderId");
+        string passengerId = findArgStr(queryClean, "passengerId");
+
+        if (orderId != null) {
+            bool success = await TicketingEngine.ExecuteRefundCsAsync(orderId, passengerId, dataSource, redis);
+            data["refundOrder"] = success;
+            if (!success) {
+                errors.Add(new { message = "Refund execution failed inside database transaction" });
+            }
+        } else {
+            errors.Add(new { message = "refundOrder missing orderId parameter" });
+        }
+    }
+
+    var resp = new Dictionary<string, object>();
+    if (data.Count > 0) resp["data"] = data;
+    if (errors.Count > 0) resp["errors"] = errors;
+    return Results.Ok(resp);
 });
 
 // D3. 原子改签与嵌套 Savepoint 校验 (Reschedule Process - POST)
@@ -890,6 +949,165 @@ app.Run($"http://0.0.0.0:{port}");
 
 public static class TicketingEngine
 {
+    public static async Task<bool> ExecuteRefundCsAsync(string orderId, string passengerId, NpgsqlDataSource dataSource, IConnectionMultiplexer redis)
+    {
+        using (var conn = await dataSource.OpenConnectionAsync())
+        using (var tx = await conn.BeginTransactionAsync(IsolationLevel.ReadCommitted))
+        {
+            try
+            {
+                // 1. 行锁订单
+                string reservationId = "";
+                string orderState = "";
+                decimal totalAmount = 0;
+                using (var orderCmd = new NpgsqlCommand("SELECT reservation_id, state, total_amount FROM orders WHERE id = @id FOR UPDATE", conn, tx))
+                {
+                    orderCmd.Parameters.AddWithValue("id", orderId);
+                    using (var reader = await orderCmd.ExecuteReaderAsync())
+                    {
+                        if (await reader.ReadAsync())
+                        {
+                            reservationId = reader.GetString(0);
+                            orderState = reader.GetString(1);
+                            totalAmount = reader.GetDecimal(2);
+                        }
+                    }
+                }
+
+                if (orderState != "CONFIRMED")
+                {
+                    return false;
+                }
+
+                // 2. 行锁预留
+                int scheduleId = 0, seatId = 0, fromSeq = 0, toSeq = 0;
+                using (var resCmd = new NpgsqlCommand("SELECT schedule_id, seat_id, from_segment, to_segment FROM reservation WHERE id = @id FOR UPDATE", conn, tx))
+                {
+                    resCmd.Parameters.AddWithValue("id", reservationId);
+                    using (var reader = await resCmd.ExecuteReaderAsync())
+                    {
+                        if (await reader.ReadAsync())
+                        {
+                            scheduleId = reader.GetInt32(0);
+                            seatId = reader.GetInt32(1);
+                            fromSeq = reader.GetInt32(2);
+                            toSeq = reader.GetInt32(3);
+                        }
+                    }
+                }
+
+                decimal ticketPrice = 100.00m;
+                decimal rate = 0.05m;
+                decimal handlingFee = ticketPrice * rate;
+                decimal refundAmount = ticketPrice - handlingFee;
+
+                if (!string.IsNullOrEmpty(passengerId))
+                {
+                    // 部分退票
+                    using (var delCmd = new NpgsqlCommand("DELETE FROM ticket WHERE reservation_id = @res_id AND passenger_id = @p_id", conn, tx))
+                    {
+                        delCmd.Parameters.AddWithValue("res_id", reservationId);
+                        delCmd.Parameters.AddWithValue("p_id", passengerId);
+                        await delCmd.ExecuteNonQueryAsync();
+                    }
+
+                    using (var upSegCmd = new NpgsqlCommand(@"
+                        UPDATE seat_segment 
+                        SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 
+                        WHERE schedule_id = @sched AND seat_id = @sid AND segment_no >= @from AND segment_no < @to", conn, tx))
+                    {
+                        upSegCmd.Parameters.AddWithValue("sched", scheduleId);
+                        upSegCmd.Parameters.AddWithValue("sid", seatId);
+                        upSegCmd.Parameters.AddWithValue("from", fromSeq);
+                        upSegCmd.Parameters.AddWithValue("to", toSeq);
+                        await upSegCmd.ExecuteNonQueryAsync();
+                    }
+
+                    decimal newAmount = Math.Max(0, totalAmount - ticketPrice);
+                    using (var upOrdCmd = new NpgsqlCommand("UPDATE orders SET total_amount = @amount WHERE id = @id", conn, tx))
+                    {
+                        upOrdCmd.Parameters.AddWithValue("amount", newAmount);
+                        upOrdCmd.Parameters.AddWithValue("id", orderId);
+                        await upOrdCmd.ExecuteNonQueryAsync();
+                    }
+                }
+                else
+                {
+                    // 全额退票
+                    using (var upOrdCmd = new NpgsqlCommand("UPDATE orders SET state = 'REFUNDED', total_amount = 0 WHERE id = @id", conn, tx))
+                    {
+                        upOrdCmd.Parameters.AddWithValue("id", orderId);
+                        await upOrdCmd.ExecuteNonQueryAsync();
+                    }
+
+                    using (var upResCmd = new NpgsqlCommand("UPDATE reservation SET state = 'RELEASED' WHERE id = @id", conn, tx))
+                    {
+                        upResCmd.Parameters.AddWithValue("id", reservationId);
+                        await upResCmd.ExecuteNonQueryAsync();
+                    }
+
+                    using (var upSegCmd = new NpgsqlCommand(@"
+                        UPDATE seat_segment 
+                        SET state = 'AVAILABLE', reservation_id = NULL, version = version + 1 
+                        WHERE schedule_id = @sched AND seat_id = @sid AND segment_no >= @from AND segment_no < @to", conn, tx))
+                    {
+                        upSegCmd.Parameters.AddWithValue("sched", scheduleId);
+                        upSegCmd.Parameters.AddWithValue("sid", seatId);
+                        upSegCmd.Parameters.AddWithValue("from", fromSeq);
+                        upSegCmd.Parameters.AddWithValue("to", toSeq);
+                        await upSegCmd.ExecuteNonQueryAsync();
+                    }
+                }
+
+                // Redis 释放席位
+                int mask = 0;
+                for (int i = fromSeq; i < toSeq; i++)
+                {
+                    mask |= (1 << (i - 1));
+                }
+                var db = redis.GetDatabase();
+                string seatKey = $"r:{scheduleId}:seat:{seatId}";
+                string resKey = $"r:{scheduleId}:reservation:{reservationId}";
+                await db.ScriptEvaluateAsync(@"
+                    local seat_key = KEYS[1]
+                    local res_key = KEYS[2]
+                    local mask = tonumber(ARGV[1])
+                    local res_id = ARGV[2]
+
+                    local current_mask = tonumber(redis.call('GET', seat_key) or '0')
+                    local new_mask = bit.band(current_mask, bit.bnot(mask))
+                    redis.call('SET', seat_key, new_mask)
+                    redis.call('DEL', res_key)
+                    return 1",
+                    new RedisKey[] { seatKey, resKey },
+                    new RedisValue[] { mask, reservationId });
+
+                // 写入发件箱
+                var payload = new { order_id = orderId, schedule_id = scheduleId, reservation_id = reservationId, handling_fee = handlingFee, refund_amount = refundAmount };
+                string payloadStr = JsonSerializer.Serialize(payload);
+                string eventId = Guid.NewGuid().ToString();
+
+                using (var outboxCmd = new NpgsqlCommand(@"
+                    INSERT INTO outbox_event (event_id, aggregate_type, aggregate_id, event_type, payload, status) 
+                    VALUES (@id, 'Order', @agg_id, 'ORDER_REFUNDED', @payload::jsonb, 'NEW')", conn, tx))
+                {
+                    outboxCmd.Parameters.AddWithValue("id", eventId);
+                    outboxCmd.Parameters.AddWithValue("agg_id", orderId);
+                    outboxCmd.Parameters.AddWithValue("payload", payloadStr);
+                    await outboxCmd.ExecuteNonQueryAsync();
+                }
+
+                await tx.CommitAsync();
+                return true;
+            }
+            catch
+            {
+                await tx.RollbackAsync();
+                return false;
+            }
+        }
+    }
+
     public static async Task RecalculateAndProjectAsync(NpgsqlDataSource dataSource, IDatabase db, int scheduleId, string seatClass)
     {
         int maxSeq = 4;

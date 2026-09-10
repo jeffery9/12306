@@ -24,7 +24,8 @@
 │                                                                             │
 │  [04 跨语言实现篇]                                                            │
 │   ├── 04_01 技术全景概述 ───► Python/Go/Rust/C#/Java 对称控制、Savepoint 改签  │
-│   └── 04_02 Python 开发 ────► OrderService/ReservationService & Redis LUA 细节  │
+│   ├── 04_02 Python 开发 ────► OrderService/ReservationService & Redis LUA 细节  │
+│   └── 04_03 GraphQL 模式 ───► 统一自描述 SDL 契约、五语系自研 AST 词法投影过滤 │
 │                                                                             │
 │  [05 生产高可用与 SRE 运维篇]                                                  │
 │   ├── 05_01 IDC 物理拓扑 ───► Spine-Leaf HA、3-Stage Clos、BGP 交换机端口限额  │
@@ -72,7 +73,9 @@
 * 🔗 **[04_01 跨多语言对称实现概述与改签事务流指南](04_01_12306_Technical_Implementation_Overview.md)**
   * *业务概要*：定义了核心引擎在 Go、Rust、C#、Java、Python 里的对称性实现指标。深度阐述了改签业务下基于 PostgreSQL 嵌套 Savepoint 的“先退旧后买新”子事务状态一致性控制。
 * 🔗 **[04_02 Python 核心开发指南与源码细节](04_02_12306_Python_Implementation_and_Development_Guide.md)**
-  * *业务概要*：Python 后端服务的物理架构细节。提供 `OrderService` 滑动费率退款逻辑、`ReservationService` 锁票和 Redis Lua 状态原子扣减的底层落地细节。
+  * *业务概要*：Python 后端服务的物理架构细节。提供 `OrderService` sliding-fee 退款逻辑、`ReservationService` 锁票和 Redis Lua 状态原子扣减的底层落地细节。
+* 🔗 **[04_03 GraphQL 统一自描述 SDL 契约与自研投影引擎](04_03_12306_GraphQL_API_and_SDL_Schema_Specification.md)**
+  * *业务概要*：定义了 12306 多语言微服务集群统一自描述元数据契约。详细阐述了自研超高速、零依赖 AST 词法大括号投影分析过滤核心算法（微秒级响应耗时），并提供完整的 Query / Mutation 联调 Body 输入输出样例。
 
 ### 2.5 第五阶段：生产级高可用与 SRE 运维指南 (SRE High Availability Playbook)
 * 🔗 **[05_01 本地 IDC Spine-Leaf 网络架构设计](05_01_12306_On_Premises_IDC_High_Availability_Spine_Leaf_Architecture.md)**

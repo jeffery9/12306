@@ -113,6 +113,12 @@
         @quota-release="releaseLongDistanceQuota"
       ></devops-console>
 
+      <!-- 6. GraphQL Interactive Console Component -->
+      <graphql-console
+        :backend-url="backendUrl"
+        :order-id="orderId"
+      ></graphql-console>
+
     </div>
 
     <!-- ==================== VUE 3 COMPONENT TEMPLATES ==================== -->
@@ -451,6 +457,85 @@
             </svg>
             解封长途配额合并
           </button>
+        </div>
+      </div>
+    </template>
+
+    <!-- Template F: GraphQL Console Component -->
+    <template id="graphql-console-template">
+      <div class="bg-slate-900/65 border border-sky-500/10 rounded-2xl p-6 sm:p-7 backdrop-blur-md shadow-2xl transition-all duration-300 hover:border-sky-500/20 hover:shadow-sky-500/5">
+        <div class="text-lg font-bold text-rail-blue mb-5 flex items-center gap-2 border-b border-white/5 pb-3">
+          <!-- GraphQL Logo Hexagon SVG -->
+          <svg class="text-neon-rose shrink-0" width="20" height="20" viewBox="0 0 29.8 33.7" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M14.9 0L0 8.6v16.5l14.9 8.6 14.9-8.6V8.6L14.9 0zm11.9 23.3l-11.9 6.9-11.9-6.9V10.4l11.9-6.9 11.9 6.9v12.9z" fill="#f43f5e" fill-opacity="0.1" stroke="#f43f5e"/>
+            <circle cx="14.9" cy="16.8" r="3.5" fill="#f43f5e"/>
+            <circle cx="14.9" cy="2.5" r="2.5" fill="#f43f5e"/>
+            <circle cx="14.9" cy="31.2" r="2.5" fill="#f43f5e"/>
+            <circle cx="2.5" cy="9.7" r="2.5" fill="#f43f5e"/>
+            <circle cx="27.3" cy="9.7" r="2.5" fill="#f43f5e"/>
+            <circle cx="2.5" cy="24" r="2.5" fill="#f43f5e"/>
+            <circle cx="27.3" cy="24" r="2.5" fill="#f43f5e"/>
+          </svg>
+          6. GraphQL 规格自描述与交互终端 (GraphQL Playground)
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- Left Panel: Schema Autorithative SDL -->
+          <div class="flex flex-col gap-2">
+            <div class="flex justify-between items-center text-xs text-slate-400 font-medium">
+              <span>📖 GraphQL SDL Schema Specification</span>
+              <button @click="fetchSchema" class="text-sky-400 hover:text-sky-300 transition-colors">
+                刷新元数据
+              </button>
+            </div>
+            <div class="bg-slate-950 border border-white/5 rounded-xl p-4 font-mono text-[10px] text-slate-300 h-[300px] overflow-y-auto leading-relaxed select-all">
+              <pre class="whitespace-pre-wrap">{{ schemaSdl }}</pre>
+            </div>
+          </div>
+
+          <!-- Right Panel: Interactive Editor & Run -->
+          <div class="flex flex-col gap-4">
+            <div class="flex flex-col gap-2">
+              <label class="text-xs text-slate-400 font-medium flex justify-between items-center">
+                <span>⚡️ GraphQL Query / Mutation Editor</span>
+                <span class="text-[10px] text-slate-500">支持原生 AST 双向检索</span>
+              </label>
+              <textarea v-model="activeQuery" class="bg-slate-950 border border-slate-800 focus:border-rail-blue/50 focus:outline-none rounded-xl p-4 font-mono text-[11px] text-sky-300 h-[140px] resize-none leading-relaxed transition-all duration-200"></textarea>
+            </div>
+
+            <!-- Pre-populated Quick Templates -->
+            <div class="flex flex-wrap gap-2">
+              <button @click="selectTemplate('query_availability')" class="text-[10px] font-semibold px-2.5 py-1.5 rounded bg-slate-800 text-slate-300 border border-slate-700 hover:border-rail-blue hover:text-slate-100 transition-all duration-150">
+                🔍 查余票 (Query)
+              </button>
+              <button @click="selectTemplate('order_details')" class="text-[10px] font-semibold px-2.5 py-1.5 rounded bg-slate-800 text-slate-300 border border-slate-700 hover:border-rail-blue hover:text-slate-100 transition-all duration-150">
+                🎫 订单与座位 (Query)
+              </button>
+              <button @click="selectTemplate('refund_order')" class="text-[10px] font-semibold px-2.5 py-1.5 rounded bg-slate-800 text-slate-300 border border-slate-700 hover:border-rail-blue hover:text-slate-100 transition-all duration-150">
+                💰 退票退款 (Mutation)
+              </button>
+            </div>
+
+            <!-- Run Button -->
+            <button @click="runQuery" :disabled="isRunning" class="w-full text-xs font-bold py-2.5 rounded-lg bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 flex items-center justify-center gap-2">
+              <svg v-if="isRunning" class="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-dasharray="40 40">
+                <circle cx="12" cy="12" r="10" stroke-width="3" stroke-opacity="0.2"/>
+                <path d="M4 12a8 8 0 0 1 8-8" stroke-width="3"/>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+              {{ isRunning ? '正在执行' : '执行 GraphQL 查询' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Result Console Section -->
+        <div class="mt-6 flex flex-col gap-2 border-t border-white/5 pt-5">
+          <span class="text-xs text-slate-400 font-medium">📋 Response Result (JSON Projection)</span>
+          <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-[11px] text-emerald-400 min-h-[120px] max-h-[220px] overflow-y-auto leading-relaxed">
+            <pre class="whitespace-pre-wrap">{{ resultJson || '{ "info": "点击执行，实时过滤渲染响应式 JSON Projection..." }' }}</pre>
+          </div>
         </div>
       </div>
     </template>

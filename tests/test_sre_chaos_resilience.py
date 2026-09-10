@@ -165,3 +165,142 @@ def test_outbox_and_projector_trace_propagation(db_session, event_loop):
         assert traceparent_var.get() == ""
         
     event_loop.run_until_complete(_impl())
+
+def test_graphql_api_queries_and_mutations(db_session, event_loop):
+    """Verify standard GraphQL schema query filtering, nested ticket resolving, and metadata SDL endpoints."""
+    async def _impl():
+        # 1. Seed Train and Seats for GraphQL query verification
+        train = Train(code="G777")
+        db_session.add(train)
+        await db_session.flush()
+
+        s1 = Station(train_id=train.id, name="北京", sequence=1)
+        s2 = Station(train_id=train.id, name="上海", sequence=2)
+        db_session.add_all([s1, s2])
+
+        schedule = TrainSchedule(train_id=train.id, service_date=datetime.date(2026, 12, 1), status="ACTIVE")
+        db_session.add(schedule)
+        await db_session.flush()
+
+        seat = Seat(schedule_id=schedule.id, carriage_no="02", seat_no="02D", seat_class="BUSINESS")
+        db_session.add(seat)
+        await db_session.flush()
+
+        seg = SeatSegment(schedule_id=schedule.id, seat_id=seat.id, segment_no=1, state="AVAILABLE", version=0)
+        db_session.add(seg)
+        await db_session.flush()
+
+        # Seed Passenger, Reservation and Orders record for detail querying
+        from src.app.models import Passenger, Reservation, Orders, Ticket
+        psg = Passenger(
+            id="PSG_GQL_01",
+            name="GraphQL Tester",
+            id_no="110101199001017777",
+            passenger_type="ADULT"
+        )
+        db_session.add(psg)
+        await db_session.flush()
+
+        res_record = Reservation(
+            id="RES_GQL_01",
+            request_id="REQ_GQL_RES_01",
+            schedule_id=schedule.id,
+            seat_id=seat.id,
+            from_segment=1,
+            to_segment=2,
+            state="HELD",
+            expires_at=datetime.datetime(2026, 12, 1, 12, 0, 0)
+        )
+        db_session.add(res_record)
+        await db_session.flush()
+
+        order = Orders(
+            id="ORD_GQL_TEST_01",
+            request_id="REQ_GQL_01",
+            reservation_id="RES_GQL_01",
+            state="CONFIRMED",
+            total_amount=100.0,
+            expires_at=datetime.datetime(2026, 12, 1, 12, 0, 0)
+        )
+        db_session.add(order)
+        await db_session.flush()
+
+        ticket = Ticket(
+            id="TK_GQL_TEST_01",
+            reservation_id="RES_GQL_01",
+            passenger_id="PSG_GQL_01",
+            seat_id=seat.id,
+            price=100.0
+        )
+        db_session.add(ticket)
+        await db_session.commit()
+
+        # 2. Invoke HTTP GraphQL Query: queryAvailability
+        # We request ONLY availableSeats and scheduleId to test over-fetching avoidance
+        query_availability_gql = """
+        query {
+          queryAvailability(scheduleId: SCHEDULE_ID, fromStationSeq: 1, toStationSeq: 2, seatClass: "BUSINESS") {
+            availableSeats
+            scheduleId
+          }
+        }
+        """.replace("SCHEDULE_ID", str(schedule.id))
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            # POST endpoint query
+            resp1 = await client.post("/graphql", json={"query": query_availability_gql})
+            assert resp1.status_code == 200
+            resp1_json = resp1.json()
+            assert "errors" not in resp1_json
+            assert "data" in resp1_json
+            
+            qa_data = resp1_json["data"]["queryAvailability"]
+            assert qa_data["availableSeats"] == 1  # Field name was resolved & normalized
+            assert qa_data["scheduleId"] == schedule.id
+            # Confirm other fields (fromStationSeq, seatClass) are NOT returned, enforcing strict over-fetching defense!
+            assert "seatClass" not in qa_data
+            assert "fromStationSeq" not in qa_data
+
+            # 3. Invoke HTTP GraphQL Query: order details with nested tickets
+            query_order_gql = """
+            query {
+              order(id: "ORD_GQL_TEST_01") {
+                id
+                state
+                totalAmount
+                tickets {
+                  id
+                  seatNo
+                  price
+                }
+              }
+            }
+            """
+            resp2 = await client.post("/graphql", json={"query": query_order_gql})
+            assert resp2.status_code == 200
+            resp2_json = resp2.json()
+            assert "errors" not in resp2_json
+            assert "data" in resp2_json
+            
+            order_data = resp2_json["data"]["order"]
+            assert order_data["id"] == "ORD_GQL_TEST_01"
+            assert order_data["state"] == "CONFIRMED"
+            assert order_data["totalAmount"] == 100.0
+            
+            tickets_list = order_data["tickets"]
+            assert len(tickets_list) == 1
+            assert tickets_list[0]["id"] == "TK_GQL_TEST_01"
+            assert tickets_list[0]["seatNo"] == "02D"
+            assert tickets_list[0]["price"] == 100.0
+            # Ensure "passengerId" is not returned, verifying nested over-fetching protection
+            assert "passengerId" not in tickets_list[0]
+
+            # 4. Invoke HTTP GraphQL GET: Schema SDL representation
+            resp3 = await client.get("/graphql")
+            assert resp3.status_code == 200
+            resp3_json = resp3.json()
+            assert "schema" in resp3_json
+            assert "type TrainAvailability" in resp3_json["schema"]
+            assert "type Order" in resp3_json["schema"]
+
+    event_loop.run_until_complete(_impl())

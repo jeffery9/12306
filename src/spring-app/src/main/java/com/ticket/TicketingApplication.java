@@ -201,6 +201,268 @@ class TicketController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
         }
     }
+
+    // ============================================================================
+    // GraphQL Symmetrical Engine & Resolvers (Zero-Dependency)
+    // ============================================================================
+    private static final String GRAPHQL_SCHEMA_SDL = 
+        "type Station {\n" +
+        "  name: String!\n" +
+        "  sequence: Int!\n" +
+        "}\n\n" +
+        "type TrainAvailability {\n" +
+        "  scheduleId: Int!\n" +
+        "  fromStationSeq: Int!\n" +
+        "  toStationSeq: Int!\n" +
+        "  seatClass: String!\n" +
+        "  availableSeats: Int!\n" +
+        "}\n\n" +
+        "type Ticket {\n" +
+        "  id: String!\n" +
+        "  passengerId: String!\n" +
+        "  seatNo: String!\n" +
+        "  carriageNo: String!\n" +
+        "  price: Float!\n" +
+        "}\n\n" +
+        "type Order {\n" +
+        "  id: String!\n" +
+        "  requestId: String!\n" +
+        "  reservationId: String!\n" +
+        "  state: String!\n" +
+        "  totalAmount: Float!\n" +
+        "  expiresAt: String!\n" +
+        "  tickets: [Ticket!]!\n" +
+        "}\n\n" +
+        "type Query {\n" +
+        "  queryAvailability(\n" +
+        "    scheduleId: Int!\n" +
+        "    fromStationSeq: Int!\n" +
+        "    toStationSeq: Int!\n" +
+        "    seatClass: String!\n" +
+        "  ): TrainAvailability!\n\n" +
+        "  order(id: String!): Order\n" +
+        "}\n\n" +
+        "type Mutation {\n" +
+        "  refundOrder(orderId: String!, passengerId: String): Boolean!\n" +
+        "}\n";
+
+    @GetMapping("/graphql")
+    @ResponseBody
+    public Map<String, Object> graphqlSchema() {
+        return Map.of("schema", GRAPHQL_SCHEMA_SDL);
+    }
+
+    @PostMapping("/graphql")
+    @ResponseBody
+    public Map<String, Object> graphql(@RequestBody Map<String, Object> reqBody) {
+        String query = reqBody.containsKey("query") ? reqBody.get("query").toString() : "";
+        String queryClean = query.replace('\n', ' ').replaceAll("\\s+", " ");
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        List<Map<String, Object>> errors = new ArrayList<>();
+
+        // 1. Resolver: queryAvailability
+        if (queryClean.contains("queryAvailability")) {
+            Integer scheduleId = findArgInt(queryClean, "scheduleId");
+            Integer fromSeq = findArgInt(queryClean, "fromStationSeq");
+            Integer toSeq = findArgInt(queryClean, "toStationSeq");
+            String seatClass = findArgStr(queryClean, "seatClass");
+
+            if (scheduleId != null && fromSeq != null && toSeq != null && seatClass != null) {
+                String cacheKey = "q:availability:" + scheduleId + ":" + seatClass;
+                String field = fromSeq + "-" + toSeq;
+
+                Object val = redisTemplate.opsForHash().get(cacheKey, field);
+                if (val == null) {
+                    ticketingService.recalculateAndProject(scheduleId, seatClass);
+                    val = redisTemplate.opsForHash().get(cacheKey, field);
+                }
+                int count = val != null ? Integer.parseInt(val.toString()) : 0;
+
+                Map<String, Object> rawData = Map.of(
+                    "scheduleId", scheduleId,
+                    "fromStationSeq", fromSeq,
+                    "toStationSeq", toSeq,
+                    "seatClass", seatClass,
+                    "availableSeats", count
+                );
+                data.put("queryAvailability", filterAvailabilityJava(queryClean, rawData));
+            } else {
+                errors.add(Map.of("message", "queryAvailability missing required parameters"));
+            }
+        }
+
+        // 2. Resolver: order Detail Query
+        if (queryClean.contains("order") && !queryClean.contains("refundOrder")) {
+            String orderId = findArgStr(queryClean, "id");
+            if (orderId != null) {
+                List<Map<String, Object>> orders = jdbcTemplate.queryForList(
+                    "SELECT request_id, reservation_id, state, total_amount, expires_at FROM orders WHERE id = ?", orderId
+                );
+                if (orders.isEmpty()) {
+                    data.put("order", null);
+                } else {
+                    Map<String, Object> ord = orders.get(0);
+                    String reservationId = (String) ord.get("reservation_id");
+                    String requestId = (String) ord.get("request_id");
+                    String state = (String) ord.get("state");
+                    double totalAmount = ord.get("total_amount") != null ? ((Number) ord.get("total_amount")).doubleValue() : 0.0;
+                    Object expiresAt = ord.get("expires_at");
+
+                    List<Map<String, Object>> tickets = jdbcTemplate.queryForList(
+                        "SELECT t.id, t.passenger_id, t.price, s.carriage_no, s.seat_no " +
+                        "FROM ticket t " +
+                        "JOIN seat s ON t.seat_id = s.id " +
+                        "WHERE t.reservation_id = ?", reservationId
+                    );
+
+                    List<Map<String, Object>> ticketsData = new ArrayList<>();
+                    for (Map<String, Object> t : tickets) {
+                        ticketsData.add(Map.of(
+                            "id", t.get("id"),
+                            "passengerId", t.get("passenger_id"),
+                            "price", t.get("price") != null ? ((Number) t.get("price")).doubleValue() : 0.0,
+                            "carriageNo", t.get("carriage_no"),
+                            "seatNo", t.get("seat_no")
+                        ));
+                    }
+
+                    Map<String, Object> rawData = new LinkedHashMap<>();
+                    rawData.put("id", orderId);
+                    rawData.put("requestId", requestId);
+                    rawData.put("reservationId", reservationId);
+                    rawData.put("state", state);
+                    rawData.put("totalAmount", totalAmount);
+                    rawData.put("expiresAt", expiresAt != null ? expiresAt.toString() : "");
+                    rawData.put("tickets", ticketsData);
+
+                    data.put("order", filterOrderJava(queryClean, rawData, ticketsData));
+                }
+            } else {
+                errors.add(Map.of("message", "order missing id parameter"));
+            }
+        }
+
+        // 3. Resolver: refundOrder Mutation
+        if (queryClean.contains("refundOrder")) {
+            String orderId = findArgStr(queryClean, "orderId");
+            String passengerId = findArgStr(queryClean, "passengerId");
+
+            if (orderId != null) {
+                try {
+                    ObjectMapper mapper = new ObjectMapper();
+                    ObjectNode reqNode = mapper.createObjectNode();
+                    reqNode.put("order_id", orderId);
+                    if (passengerId != null) {
+                        reqNode.put("passenger_id", passengerId);
+                    }
+                    ticketingService.refundOrder(reqNode);
+                    data.put("refundOrder", true);
+                } catch (Exception e) {
+                    errors.add(Map.of("message", e.getMessage() != null ? e.getMessage() : "Refund failed"));
+                    data.put("refundOrder", false);
+                }
+            } else {
+                errors.add(Map.of("message", "refundOrder missing orderId parameter"));
+            }
+        }
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        if (!data.isEmpty()) resp.put("data", data);
+        if (!errors.isEmpty()) resp.put("errors", errors);
+        return resp;
+    }
+
+    private Integer findArgInt(String query, String key) {
+        int idx = query.indexOf(key);
+        if (idx == -1) return null;
+        String after = query.substring(idx + key.length());
+        StringBuilder num = new StringBuilder();
+        boolean started = false;
+        for (char c : after.toCharArray()) {
+            if (Character.isDigit(c)) {
+                started = true;
+                num.append(c);
+            } else if (started) {
+                break;
+            } else if (c == ':' || Character.isWhitespace(c)) {
+                // continue
+            } else {
+                break;
+            }
+        }
+        try {
+            return Integer.parseInt(num.toString());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String findArgStr(String query, String key) {
+        int idx = query.indexOf(key);
+        if (idx == -1) return null;
+        String after = query.substring(idx + key.length());
+        StringBuilder val = new StringBuilder();
+        boolean started = false;
+        for (char c : after.toCharArray()) {
+            if (c == '"' || c == '\'') {
+                if (started) {
+                    break;
+                } else {
+                    started = true;
+                }
+            } else if (started) {
+                val.append(c);
+            } else if (c == ':' || Character.isWhitespace(c)) {
+                // continue
+            } else {
+                break;
+            }
+        }
+        return val.length() > 0 ? val.toString() : null;
+    }
+
+    private Map<String, Object> filterAvailabilityJava(String query, Map<String, Object> rawData) {
+        Map<String, Object> filtered = new LinkedHashMap<>();
+        int pos = query.indexOf("queryAvailability");
+        if (pos != -1) {
+            String sub = query.substring(pos);
+            if (sub.contains("availableSeats")) filtered.put("availableSeats", rawData.get("availableSeats"));
+            if (sub.contains("scheduleId")) filtered.put("scheduleId", rawData.get("scheduleId"));
+            if (sub.contains("fromStationSeq")) filtered.put("fromStationSeq", rawData.get("fromStationSeq"));
+            if (sub.contains("toStationSeq")) filtered.put("toStationSeq", rawData.get("toStationSeq"));
+            if (sub.contains("seatClass")) filtered.put("seatClass", rawData.get("seatClass"));
+        }
+        return filtered;
+    }
+
+    private Map<String, Object> filterOrderJava(String query, Map<String, Object> rawData, List<Map<String, Object>> tickets) {
+        Map<String, Object> filtered = new LinkedHashMap<>();
+        int pos = query.indexOf("order");
+        if (pos != -1) {
+            String sub = query.substring(pos);
+            if (sub.contains("id")) filtered.put("id", rawData.get("id"));
+            if (sub.contains("requestId")) filtered.put("requestId", rawData.get("requestId"));
+            if (sub.contains("reservationId")) filtered.put("reservationId", rawData.get("reservationId"));
+            if (sub.contains("state")) filtered.put("state", rawData.get("state"));
+            if (sub.contains("totalAmount")) filtered.put("totalAmount", rawData.get("totalAmount"));
+            if (sub.contains("expiresAt")) filtered.put("expiresAt", rawData.get("expiresAt"));
+            if (sub.contains("tickets")) {
+                List<Map<String, Object>> filteredTickets = new ArrayList<>();
+                for (Map<String, Object> t : tickets) {
+                    Map<String, Object> tFiltered = new LinkedHashMap<>();
+                    if (sub.contains("seatNo")) tFiltered.put("seatNo", t.get("seatNo"));
+                    if (sub.contains("carriageNo")) tFiltered.put("carriageNo", t.get("carriageNo"));
+                    if (sub.contains("price")) tFiltered.put("price", t.get("price"));
+                    if (sub.contains("passengerId")) tFiltered.put("passengerId", t.get("passengerId"));
+                    if (sub.contains("id")) tFiltered.put("id", t.get("id"));
+                    filteredTickets.add(tFiltered);
+                }
+                filtered.put("tickets", filteredTickets);
+            }
+        }
+        return filtered;
+    }
 }
 
 // ============================================================================
