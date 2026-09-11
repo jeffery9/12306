@@ -1,5 +1,9 @@
 # 🌌 12306-CQRS-Python: AI Agent 赋能的 12306 高并发区间票务分配系统 MVP
 
+> **⚠️ 重要声明 (Disclaimer)**
+>
+> 本项目的所有架构设计与技术实现，均系作者基于公开资料、行业共识及主流技术推演的**纯粹猜想与模拟**，旨在探索大规模高并发系统的构建方案。作者**从未接触**过真实的 12306 内部系统，因此本项目**不包含、不涉及、也未处理**任何国家秘密、商业机密或任何真实世界的内部敏感数据。本项目与真实的中国铁路票务系统无任何关联。
+
 [![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/tests-23%20%2F%2023%20Passed-brightgreen.svg)](#-5-自动化测试与高并发撞击压测)
@@ -250,12 +254,18 @@ python -m uvicorn src.app.web_server:app --host 0.0.0.0 --port 8080 --reload
 
 # 🤖 7. 关于 AI Agent 协同研发的故事 (The Agentic Story)
 
+> **🤖 AI 主导开发声明 (AI-Led Development Declaration)**
+>
+> 本项目是一个极限探索 AI 赋能软件开发的实验性产品。在整个研发周期中，**AI Agent 承担了超过 90% 的物理编码、单元测试、并发调试、文档撰写及 DevOps 脚本编写工作。**
+>
+> 人类工程师主要扮演“首席架构师”与“最终代码评审人”的角色，负责定义顶层设计、切分任务颗粒度、并对 AI 生成的核心代码进行最终的正确性与安全性审计。
+
 本项目的成功合龙是 **ChatGPT（首席架构师）** 与 **Gemini CLI（开发执行官 - YOLO 自动驾驶模式）** 协同作战的结晶：
 
 - ** ChatGPT **：担任 Principal Architect，敲定了 12306 高并发系统的 CQRS 及 Event-Driven 顶层演进路线，保证了架构在分布式层级的优雅降级与正确性。
 - ** Gemini CLI **：担任 Execution Engine，运行在 YOLO 绝对去冗余和去 AI 废话模式下。在多轮开发和多 Loop 错位的冲突调试中，Gemini 严格履行 Andrej Karpathy 总结的“谋定后动”、“手术刀式精准修改”与“强目标验证交付”准则，自主排查死锁与 Kafka 消费队列污染，最终完成了整套测试的完美一统。
 
-_AI 与人类工程师在 12306 这一千古难题上的这次极简交锋，证明了高度自律的微内核架构与精准测试套件的结合，完全可以让软件开发效率实现十倍级的降维打击。_
+_AI 与人类工程师在 12306 这一千古难题上的这次极简交锋，证明了以 AI 为绝对主力的研发模式，完全可以让软件开发效率实现十倍级的降维打击。_
 
 ---
 
